@@ -19,7 +19,8 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install build tools
-        run: pip install . pyinstaller
+        # Qt 6.10+ needs Windows' icuuc.dll (Windows 10 1903+); 6.9 runs on every Windows 10/11.
+        run: pip install . pyinstaller "PySide6-Essentials==6.9.3"
       - name: Test
         run: |
           pip install pytest

@@ -11,13 +11,15 @@ BIN = Path(SPECPATH) / "bin"
 ICON = Path(SPECPATH) / "windows" / "songsnag.ico"
 
 # ffmpeg, ffprobe, their DLLs and deno go to <bundle>/tools, where songsnag.tools looks for them.
-binaries = [(str(p), "tools") for p in BIN.glob("*") if p.is_file()] if BIN.is_dir() else []
+# As data, not binaries: PyInstaller would otherwise also copy ffmpeg's DLLs into the bundle root
+# (dependency analysis), doubling ~180 MB. They're separate programs, so they don't need it.
+tools = [(str(p), "tools") for p in BIN.glob("*") if p.is_file()] if BIN.is_dir() else []
 
 a = Analysis(
     [str(ROOT / "packaging" / "launch.py")],
     pathex=[str(ROOT / "src")],
-    binaries=binaries,
-    datas=[(str(SRC / "assets"), "songsnag/assets"), *collect_data_files("ytmusicapi")],
+    binaries=[],
+    datas=[(str(SRC / "assets"), "songsnag/assets"), *collect_data_files("ytmusicapi"), *tools],
     hiddenimports=["PySide6.QtSvg", "ytmusicapi", "mutagen"],
     excludes=["tkinter", "unittest", "pydoc", "PySide6.QtQml", "PySide6.QtQuick", "PySide6.QtPdf",
               "PySide6.QtWebEngineCore", "PySide6.QtMultimedia", "PySide6.Qt3DCore"],
