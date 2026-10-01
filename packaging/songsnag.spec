@@ -10,7 +10,8 @@ SRC = ROOT / "src" / "songsnag"
 BIN = Path(SPECPATH) / "bin"
 ICON = Path(SPECPATH) / "windows" / "songsnag.ico"
 
-binaries = [(str(p), ".") for p in BIN.glob("*") if p.is_file()] if BIN.is_dir() else []
+# ffmpeg, ffprobe, their DLLs and deno go to <bundle>/tools, where songsnag.tools looks for them.
+binaries = [(str(p), "tools") for p in BIN.glob("*") if p.is_file()] if BIN.is_dir() else []
 
 a = Analysis(
     [str(ROOT / "packaging" / "launch.py")],

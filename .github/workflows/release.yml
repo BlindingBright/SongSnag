@@ -28,9 +28,10 @@ jobs:
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force packaging/bin | Out-Null
-          Invoke-WebRequest https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip -OutFile ffmpeg.zip
+          # The "shared" build: ffmpeg and ffprobe share one set of DLLs (~100 MB smaller than two static exes).
+          Invoke-WebRequest https://github.com/yt-dlp/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl-shared.zip -OutFile ffmpeg.zip
           Expand-Archive ffmpeg.zip -DestinationPath ffmpeg
-          Copy-Item ffmpeg/*/bin/ffmpeg.exe, ffmpeg/*/bin/ffprobe.exe packaging/bin/
+          Copy-Item ffmpeg/*/bin/ffmpeg.exe, ffmpeg/*/bin/ffprobe.exe, ffmpeg/*/bin/*.dll packaging/bin/
           Invoke-WebRequest https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip -OutFile deno.zip
           Expand-Archive deno.zip -DestinationPath packaging/bin
       - name: Build app

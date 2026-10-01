@@ -8,8 +8,11 @@ from pathlib import Path
 
 
 def _bundle_dir() -> Path | None:
-    # Frozen builds ship ffmpeg / deno next to the executable.
-    return Path(sys.executable).parent if getattr(sys, "frozen", False) else None
+    # Frozen builds ship ffmpeg / deno in a "tools" folder inside the app's bundle directory
+    # (PyInstaller's _internal), not next to the executable.
+    if not getattr(sys, "frozen", False):
+        return None
+    return Path(getattr(sys, "_MEIPASS", Path(sys.executable).parent)) / "tools"
 
 
 def _which(name: str, extra: list[Path] = ()) -> str | None:
