@@ -91,11 +91,12 @@ class Downloader:
             "retries": 5,
             "fragment_retries": 5,
             "socket_timeout": 30,
-            "js_runtimes": self.js_runtimes or None,
             "windowsfilenames": True,  # names stay valid if the library moves to Windows/exFAT
             "trim_file_name": 180,
             "overwrites": False,
         }
+        if self.js_runtimes:  # none found: leave yt-dlp's default (it rejects an empty setting)
+            opts["js_runtimes"] = self.js_runtimes
         if self.ffmpeg:
             opts["ffmpeg_location"] = self.ffmpeg
         if cookies and self.cookie_source:

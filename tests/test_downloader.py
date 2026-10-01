@@ -76,3 +76,12 @@ def test_redownload_replaces_own_file_but_not_others(tmp_path):
     d._unique_name(ydl, same, own)
     assert same["songsnag_name"] == "Song"
     d.close()
+
+
+def test_no_js_runtime_still_builds_a_downloader(tmp_path):
+    import yt_dlp
+
+    d = dl(music_dir=str(tmp_path))
+    d.js_runtimes = {}
+    assert "js_runtimes" not in d.base_opts(cookies=False)
+    yt_dlp.YoutubeDL(d._download_opts(cookies=False)).close()  # must not raise
