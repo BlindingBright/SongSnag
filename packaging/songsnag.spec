@@ -27,6 +27,10 @@ a = Analysis(
     module_collection_mode={"yt_dlp": "py", "yt_dlp_ejs": "py"},
     noarchive=False,
 )
+# PyInstaller 6 still recognises the tools as Windows binaries and copies their DLL dependencies into the
+# bundle root. ffmpeg loads them from its own folder, so drop those root-level duplicates.
+TOOL_FILES = {Path(src).name.lower() for src, _ in tools}
+a.binaries = [b for b in a.binaries if not ("/" not in b[0].replace("\\", "/") and b[0].lower() in TOOL_FILES)]
 pyz = PYZ(a.pure)
 exe = EXE(
     pyz, a.scripts, [],
