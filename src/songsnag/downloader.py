@@ -287,7 +287,12 @@ class Downloader:
         fmt = (info.get("requested_formats") or [info])[0]
         path = Path(self._final_path)
         if previous and previous != path and previous.exists():
-            previous.unlink()  # replaced by the new download (e.g. .opus -> .mp3)
+            previous.unlink()  # replaced by the new download (e.g. .opus -> .mp3, or re-filed under its album)
+            if previous.parent != self.settings.music_path and previous.parent != path.parent:
+                try:
+                    previous.parent.rmdir()  # only if that left the old artist folder empty
+                except OSError:
+                    pass
         codec = path.suffix.lstrip(".")
         abr = fmt.get("abr")
         if self.settings.audio_format == "best" and fmt.get("acodec"):

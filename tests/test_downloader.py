@@ -123,3 +123,27 @@ def test_album_songs_take_the_albums_title_credits_and_folder(tmp_path):
     assert res.path == tmp_path / "DAMAG3" / "5318008 (feat. X).mp3"  # album artist's folder, album's title
     assert (res.meta["artist"], res.meta["track"]) == ("Amber Ryann, DAMAG3", 7)
     assert ydl.info["meta_track"] == "7/12" and ydl.info["meta_album_artist"] == "DAMAG3"
+
+
+def test_redownload_under_a_new_folder_removes_the_empty_old_one(tmp_path):
+    d = dl(music_dir=str(tmp_path), layout="artist")
+    old = tmp_path / "AngelVision" / "Night Friends.mp3"
+    old.parent.mkdir()
+    old.write_bytes(b"old")
+
+    class FakeYDL:
+        def prepare_filename(self, info):
+            return str(tmp_path / info["songsnag_artist"] / f"{info['songsnag_name']}.mp3")
+
+        def process_ie_result(self, info, download=True):
+            out = Path(self.prepare_filename(info))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"new")
+            d._on_final(str(out))
+
+    from pathlib import Path
+
+    d._open = lambda: FakeYDL()
+    res = d.download({"id": "krJKCMV-ujo", "title": "Switch Angel - Night Friends"}, previous=old)
+    assert res.path == tmp_path / "Switch Angel" / "Night Friends.mp3"
+    assert not old.parent.exists()
