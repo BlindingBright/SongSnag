@@ -6,7 +6,10 @@ import time
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-QtWidgets = pytest.importorskip("PySide6.QtWidgets")
+try:
+    from PySide6 import QtWidgets
+except ImportError as e:  # Qt installed but its system libraries aren't (a bare CI image, Wine without Direct3D)
+    pytest.skip(f"Qt can't load here: {e}", allow_module_level=True)
 
 from PySide6.QtCore import Qt  # noqa: E402
 
