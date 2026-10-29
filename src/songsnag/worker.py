@@ -291,6 +291,19 @@ def resolve(spec: str):
     return run
 
 
+def search_artists(query: str):
+    def run(emit, catalog: Catalog, settings) -> None:
+        from . import collect
+
+        found = collect.search_artists(query)
+        saved = catalog.saved_by([a["name"] for a in found])  # how much of each the user already has
+        for a in found:
+            a["saved"] = saved[a["name"]]
+        emit("artists_found", [query, found])
+
+    return run
+
+
 def check_follows(emit, catalog: Catalog, settings) -> None:
     """Queue the songs on releases followed artists put out since the last check."""
     from . import collect
@@ -346,6 +359,8 @@ def main(args) -> int:
         return fill_albums(events, args.ids.split(",") if args.ids else None)
     if args.resolve:
         return _one_shot(events, resolve(args.resolve))
+    if args.search_artists:
+        return _one_shot(events, search_artists(args.search_artists))
     if args.check_follows:
         return _one_shot(events, check_follows)
     if args.discover:

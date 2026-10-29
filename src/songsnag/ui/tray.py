@@ -19,7 +19,7 @@ from ..tools import find_ffmpeg, find_js_runtimes
 from .common import app_icon, open_path, reveal, tray_icon
 from .dialogs import SettingsDialog, WelcomeDialog, pick_folder
 from .library import LibraryWindow
-from .music import DiscoverWindow, FollowsDialog, GetMusicDialog, confirm_collection
+from .music import ArtistSearchWindow, DiscoverWindow, FollowsDialog, GetMusicDialog, confirm_collection
 from .worker_proc import WorkerSupervisor
 
 log = logging.getLogger(__name__)
@@ -45,6 +45,7 @@ class Tray(QObject):
         self._follow_wanted = False
         self._lookup: QProgressDialog | None = None  # shown while an album/artist is being looked up
         self.discover_window: DiscoverWindow | None = None
+        self.artist_window: ArtistSearchWindow | None = None
         self._batch_saved = 0
 
         self._icon_state = "idle"
@@ -142,6 +143,7 @@ class Tray(QObject):
         m.addAction("Fill in missing album info", lambda: self.fill_albums(None))
         m.addAction("Merge duplicate artist folders…", self.tidy_folders)
         m.addSeparator()
+        m.addAction("Find an artist…", lambda: self.find_artist(""))
         m.addAction("Get an album or artist…", self.get_music)
         m.addAction("Discover new music…", self.show_discover)
         m.addAction("Followed artists…", self.show_follows)
@@ -191,6 +193,7 @@ class Tray(QObject):
             return "Reading history…"
         if self._tasks_running:
             return {"resolve": "Looking it up on YouTube Music…", "discover": "Finding suggestions…",
+                    "search": "Searching YouTube Music…",
                     "follows": "Checking followed artists…"}[sorted(self._tasks_running)[0]]
         if not self.settings.watch_enabled:
             return "Not watching your browser"
@@ -265,6 +268,10 @@ class Tray(QObject):
             self._set_icon()
             self._notify(f"{name}", f"Found {n} new videos to check." if n else "No new videos found.")
             self.worker.kick()
+        elif kind == "artists_found":
+            self._task_done("search")
+            if self.artist_window:
+                self.artist_window.show_results(*payload)
         elif kind == "resolve_progress":
             self._lookup_progress(*payload)
         elif kind == "resolved":
@@ -288,7 +295,9 @@ class Tray(QObject):
         elif kind == "task_failed":
             name, err = payload
             self._task_done(name)
-            if name == "resolve":
+            if name == "search" and self.artist_window:
+                self.artist_window.search_failed(err)
+            elif name == "resolve":
                 self._close_lookup()
                 QMessageBox.warning(None, APP_NAME, f"Couldn't get that:\n\n{err}")
             else:
@@ -432,7 +441,8 @@ class Tray(QObject):
     def show_library(self) -> None:
         if self.library is None:
             self.library = LibraryWindow(self.catalog, self.settings, self.worker.kick, self.set_format,
-                                         self.fill_albums, self.get_music, activity=self._status_text)
+                                         self.fill_albums, self.get_music, activity=self._status_text,
+                                         on_find=self.find_artist)
         self.library.show()
         self.library.raise_()
         self.library.activateWindow()
@@ -493,10 +503,29 @@ class Tray(QObject):
             return
         self._show_lookup(spec)
 
+    def find_artist(self, text: str = "") -> None:
+        """Search YouTube Music for an artist (in the library or not), then download or follow them."""
+        if self.artist_window is None:
+            self.artist_window = ArtistSearchWindow(self._search_artists, self._artist_picked)
+        self.artist_window.open_with(text)
+
+    def _search_artists(self, name: str) -> None:
+        self.worker.cancel("search")  # a newer search replaces one still running
+        self._task_done("search")
+        self._task("search", ["--search-artists", name])
+
+    def _artist_picked(self, artist_id: str, name: str, follow_only: bool) -> None:
+        if follow_only:
+            self.get_music(f"follow:{artist_id}", True)
+        else:
+            self.get_music(f"artistid:{artist_id}", False)
+
     def _show_lookup(self, spec: str) -> None:
         """A small window that opens at once, so a long artist lookup never looks like a freeze."""
         kind, _, rest = spec.partition(":")
-        what = rest.replace("\t", " – ").strip() if kind in ("artist", "album", "follow") else "that link"
+        what = rest.replace("\t", " – ").strip() if kind in ("artist", "album") else "that link"
+        if kind in ("artistid", "follow"):
+            what = "the artist"
         dlg = QProgressDialog(f"Looking up {what} on YouTube Music…", "Cancel", 0, 0)
         dlg.setWindowTitle(f"{APP_NAME}: looking up")
         dlg.setWindowIcon(app_icon())

@@ -7,6 +7,7 @@ if the app is closed mid-download.
 from __future__ import annotations
 
 import csv
+import re
 import sqlite3
 import threading
 import time
@@ -307,6 +308,19 @@ class Catalog:
             cur = self._db.cursor()
             cur.row_factory = None  # plain tuples: several times faster than sqlite3.Row for big libraries
             return cur.execute(sql, args).fetchall()
+
+    def saved_by(self, names: list[str]) -> dict[str, int]:
+        """Saved songs per artist name, matched loosely ("Weird Al" Yankovic = Weird Al Yankovic) against
+        every credited artist."""
+        from .youtube import loose
+
+        want = {loose(n): n for n in names}
+        out = dict.fromkeys(names, 0)
+        for credits, n in self._all("SELECT artist, COUNT(*) FROM tracks WHERE status=? GROUP BY artist", (DONE,)):
+            for who in {loose(a) for a in re.split(r",\s*|\s+&\s+|\s+(?:feat|ft)\.?\s+", credits or "", flags=re.I)}:
+                if who in want:
+                    out[want[who]] += n
+        return out
 
     def changed_ids(self, since: float) -> set[str]:
         with self._lock:

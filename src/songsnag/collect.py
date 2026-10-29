@@ -178,6 +178,18 @@ def _search_artist(query: str) -> str:
     return pick["browseId"]
 
 
+def search_artists(query: str, limit: int = 10) -> list[dict]:
+    """Artists on YouTube Music matching a name, best match first: [{id, name}]."""
+    results = albums._call(_yt().search, query, filter="artists", limit=limit) or []
+    out, seen = [], set()
+    for r in results:
+        if r.get("browseId") and r.get("artist") and r["browseId"] not in seen:
+            seen.add(r["browseId"])
+            out.append({"id": r["browseId"], "name": r["artist"]})
+    exact = [a for a in out if norm(a["name"]) == norm(query)]
+    return exact + [a for a in out if a not in exact]
+
+
 def _search_album(query: str, artist_name: str = "") -> str:
     results = albums._call(_yt().search, f"{artist_name} {query}".strip(), filter="albums", limit=10) or []
     results = [r for r in results if r.get("browseId")]
@@ -239,6 +251,8 @@ def resolve(spec: str, progress: Progress = _quiet) -> Collection:
     if kind == "artist":
         progress(0, 0, f"Finding {rest} on YouTube Music…")
         return artist(_search_artist(rest), progress=progress)
+    if kind == "artistid":  # picked from a search: no guessing which artist was meant
+        return artist(rest, progress=progress)
     if kind == "follow":  # follow only: no back catalog, so skip fetching every album's tracks
         return artist(_search_artist(rest) if not rest.startswith("UC") else rest, fetch_tracks=False)
     if kind == "album":

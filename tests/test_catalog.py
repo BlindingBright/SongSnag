@@ -226,3 +226,13 @@ def test_upcoming_lists_the_current_song_then_the_queue_in_order(tmp_path):
     c.next_job()  # the live play is being downloaded
     c.finish_failed("backfill001", "net", retry_in=600)  # waiting for a retry: not "up next"
     assert [r["video_id"] for r in c.upcoming()] == ["live0000001", "album000001"]
+
+
+def test_saved_by_matches_names_loosely_across_credits(tmp_path):
+    c = cat(tmp_path)
+    for vid, artist in (("a0000000001", '"Weird Al" Yankovic'), ("a0000000002", "Weird Al Yankovic, Guest"),
+                        ("a0000000003", "Someone FEAT Weird Al Yankovic"), ("a0000000004", "Other")):
+        c.add_sighting(vid, source="brave")
+        c.next_job()
+        c.finish_done(vid, {"artist": artist, "title": vid})
+    assert c.saved_by(["Weird Al Yankovic", "Nobody"]) == {"Weird Al Yankovic": 3, "Nobody": 0}

@@ -73,6 +73,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--ids", help=argparse.SUPPRESS)
     ap.add_argument("--resolve", metavar="SPEC", help=argparse.SUPPRESS)
     ap.add_argument("--check-follows", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--search-artists", metavar="NAME", help=argparse.SUPPRESS)
     ap.add_argument("--discover", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 

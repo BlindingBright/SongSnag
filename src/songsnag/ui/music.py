@@ -122,6 +122,97 @@ def confirm_collection(parent, c: dict, follow_checked: bool) -> tuple[bool, boo
     return yes, bool(yes and follow and follow.isChecked())
 
 
+class ArtistSearchWindow(QWidget):
+    """Find an artist on YouTube Music, including ones not in the library yet, and get or follow them."""
+
+    def __init__(self, on_search, on_pick, parent=None):
+        super().__init__(parent)
+        self.on_search = on_search  # (name) -> asks the tray to search in a worker
+        self.on_pick = on_pick  # (artist id, name, follow) -> the usual look-up-and-confirm flow
+        self.setWindowTitle(f"{APP_NAME}: find an artist")
+        self.setWindowIcon(app_icon())
+        self.query = QLineEdit(placeholderText="Artist name")
+        self.query.returnPressed.connect(self.search)
+        self.go = QPushButton("Search")
+        self.go.setDefault(True)
+        self.go.clicked.connect(self.search)
+        self.results = QListWidget()
+        self.results.itemDoubleClicked.connect(lambda _: self._pick(False))
+        self.results.currentItemChanged.connect(lambda *_: self._sync())
+        self.info = QLabel("Search YouTube Music for any artist, including ones you haven't played yet.")
+        self.info.setWordWrap(True)
+        self.get = QPushButton("Download their music…")
+        self.get.clicked.connect(lambda: self._pick(False))
+        self.follow = QPushButton("Follow (new releases only)")
+        self.follow.clicked.connect(lambda: self._pick(True))
+        row = QHBoxLayout()
+        row.addWidget(self.query, 1)
+        row.addWidget(self.go)
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        buttons.addWidget(self.follow)
+        buttons.addWidget(self.get)
+        lay = QVBoxLayout(self)
+        lay.addLayout(row)
+        lay.addWidget(self.info)
+        lay.addWidget(self.results, 1)
+        lay.addLayout(buttons)
+        self.resize(460, 380)
+        self._sync()
+
+    def open_with(self, text: str) -> None:
+        if text:
+            self.query.setText(text)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.query.setFocus()
+        if text:
+            self.search()
+
+    def search(self) -> None:
+        name = self.query.text().strip()
+        if not name:
+            return
+        self.results.clear()
+        self.go.setEnabled(False)
+        self.info.setText(f"Searching YouTube Music for “{name}”…")
+        self.on_search(name)
+        self._sync()
+
+    def show_results(self, query: str, found: list[dict]) -> None:
+        self.go.setEnabled(True)
+        if query != self.query.text().strip():
+            return  # an older search finishing after a newer one started
+        self.results.clear()
+        for a in found:
+            have = f"  —  {a['saved']} songs in your library" if a.get("saved") else "  —  new to your library"
+            item = QListWidgetItem(a["name"] + have)
+            item.setData(Qt.ItemDataRole.UserRole, (a["id"], a["name"]))
+            self.results.addItem(item)
+        if found:
+            self.results.setCurrentRow(0)
+            self.info.setText("Pick the right one (several artists can share a name), then download or follow.")
+        else:
+            self.info.setText(f"No artist called “{query}” on YouTube Music.")
+        self._sync()
+
+    def search_failed(self, err: str) -> None:
+        self.go.setEnabled(True)
+        self.info.setText(f"Search didn't work: {err}")
+
+    def _sync(self) -> None:
+        picked = self.results.currentItem() is not None
+        self.get.setEnabled(picked)
+        self.follow.setEnabled(picked)
+
+    def _pick(self, follow_only: bool) -> None:
+        item = self.results.currentItem()
+        if item:
+            artist_id, name = item.data(Qt.ItemDataRole.UserRole)
+            self.on_pick(artist_id, name, follow_only)
+
+
 class DiscoverWindow(QWidget):
     COLUMNS = ("Artist", "Title", "Album", "Why")
 

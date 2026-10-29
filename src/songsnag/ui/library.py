@@ -153,7 +153,7 @@ class LibraryModel(QAbstractTableModel):
 
 class LibraryWindow(QWidget):
     def __init__(self, catalog: Catalog, settings: Settings, on_change, on_format, on_albums, on_get=None,
-                 parent=None, activity=None):
+                 parent=None, activity=None, on_find=None):
         super().__init__(parent)
         self.catalog = catalog
         self.settings = settings
@@ -162,6 +162,7 @@ class LibraryWindow(QWidget):
         self.on_albums = on_albums  # called with video ids to look up album info for
         self.on_get = on_get  # called with a resolve spec (whole album / artist), and whether to follow
         self.activity = activity  # () -> the tray's one-line status ("Downloading: …")
+        self.on_find = on_find  # (text) -> search YouTube Music for an artist not (yet) in the library
         self.setWindowTitle(f"{APP_NAME} Library")
         self.setWindowIcon(app_icon())
 
@@ -206,9 +207,14 @@ class LibraryWindow(QWidget):
         self._sync_format()
         self.format.activated.connect(self._format_chosen)  # user picks only, not programmatic syncs
 
+        find = QToolButton(text="Find artist online…")
+        find.setToolTip("Search YouTube Music for an artist (also ones not in your library) to download or follow")
+        find.clicked.connect(lambda: self.on_find and self.on_find(self.search.text().strip()))
+        find.setVisible(on_find is not None)
         top = QHBoxLayout()
         top.addWidget(self.search, 1)
         top.addWidget(self.status)
+        top.addWidget(find)
         # What the worker is on right now, next to the counts; the queue itself is in the list.
         self.now = QLabel()
         bold = QFont(self.now.font())

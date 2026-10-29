@@ -48,9 +48,10 @@ On first start SongSnag asks where to save music and whether to grab the last 30
 | **Pause downloads** | Stop downloading (plays are still noted and downloaded when you resume). |
 | **Open / Change music folder…** | Changing the folder offers to move the songs you already have. |
 | **Recently saved** | The last 10 songs; click one to show it in your file manager. |
-| **Library…** | Search everything, play, reveal, "Download anyway", "Look up album info", **Export** (playlist or CSV), and the **Save songs as** format dropdown. Clicking the tray icon opens it too. |
+| **Library…** | Search everything (sorts by any column, stays quick with tens of thousands of songs), play, reveal, "Download anyway", "Look up album info", **Export** (playlist or CSV), and the **Save songs as** format dropdown. Clicking the tray icon opens it too. |
 | **Fill in missing album info** | Looks up album, year, track number and cover for saved songs that haven't been checked yet, and writes them into the files. |
 | **Merge duplicate artist folders…** | Shows artists filed under more than one spelling ("Weird Al" / 'Weird' Al / Weird Al) and, if you agree, moves their songs into one folder. |
+| **Find an artist…** | Search YouTube Music for any artist, including ones not in your library yet. The results say how many of their songs you already have, so same-named artists are easy to tell apart. Download their music or just follow them. Also in the Library as **Find artist online…** (it searches for whatever is in the search box). |
 | **Get an album or artist…** | An artist name, an album title, or a link to an album, playlist or channel. Shows how many songs it found before downloading anything. Tick "new releases" to follow the artist. |
 | **Discover new music…** | Songs you might like, based on what you play most. A song is only suggested when several of your favourites lead to it, or it's by an artist you already play. Settings can download the top few automatically each week (off by default). |
 | **Followed artists…** | Artists whose new albums and singles download automatically (checked daily). The Library's right-click menu can also get a song's whole album, everything by its artist, or follow the artist. |

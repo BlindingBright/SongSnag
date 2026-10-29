@@ -87,3 +87,9 @@ def test_artist_reports_progress_per_album(ytm):
     seen = []
     collect.resolve("artist:Band", progress=lambda done, total, label: seen.append((done, total)))
     assert seen[-1] == (2, 2) and (0, 2) in seen
+
+
+def test_search_artists_puts_the_exact_name_first(ytm):
+    found = collect.search_artists("Band")
+    assert [a["id"] for a in found] == ["UCband", "UCtribute"]
+    assert collect.resolve("artistid:UCband").artist_id == "UCband"
