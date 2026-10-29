@@ -117,6 +117,10 @@ src/songsnag/
   ui/             tray, library window, dialogs
 ```
 
+## Changes
+
+See [CHANGELOG.md](CHANGELOG.md) for what's new in each version.
+
 ## A note on use
 
 SongSnag is meant for keeping personal copies of music you listen to. Downloading from YouTube may be against YouTube's Terms of Service, and copyright law differs between countries. You're responsible for how you use it. Please support the artists you love.
