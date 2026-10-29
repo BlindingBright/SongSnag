@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import getpass
+import hashlib
+import os
 import subprocess
 import sys
 from functools import cache
@@ -25,24 +27,34 @@ def app_icon() -> QIcon:
     return icon if not icon.isNull() else QIcon.fromTheme("audio-x-generic")
 
 
+def _grey(pm: QPixmap) -> QPixmap:
+    """The icon in solid grey, keeping its shape (alpha)."""
+    img = pm.toImage()
+    for y in range(img.height()):
+        for x in range(img.width()):
+            c = img.pixelColor(x, y)
+            if c.alpha():
+                g = int(0.3 * c.red() + 0.59 * c.green() + 0.11 * c.blue()) // 2 + 70  # flat, mid grey
+                img.setPixelColor(x, y, QColor(g, g, g, c.alpha()))
+    return QPixmap.fromImage(img)
+
+
 @cache
 def tray_icon(state: str) -> QIcon:
-    """idle / busy / paused variants of the app icon."""
+    """idle / paused: solid grey (nothing happening). busy / busy2: full colour, the two frames of the
+    "working" flash (busy2 adds a green dot)."""
     base = app_icon().pixmap(64, 64)
-    if state == "idle":
+    if state == "busy":
         return QIcon(base)
-    pm = QPixmap(base)
+    pm = _grey(base) if state in ("idle", "paused") else QPixmap(base)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
+    p.setPen(Qt.PenStyle.NoPen)
     if state == "paused":
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceAtop)
-        p.fillRect(pm.rect(), QColor(120, 120, 120, 200))
-        p.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
         p.setBrush(QColor("white"))
-        p.setPen(Qt.PenStyle.NoPen)
         p.drawRect(38, 38, 8, 22)
         p.drawRect(52, 38, 8, 22)
-    else:  # busy: a green dot
+    elif state == "busy2":
         p.setBrush(QColor("#2ecc71"))
         p.setPen(QColor("white"))
         p.drawEllipse(QPointF(50, 50), 12, 12)
@@ -78,6 +90,8 @@ class InstanceGuard(QObject):
     def __init__(self):
         super().__init__()
         self.name = f"{APP_ID}-{getpass.getuser()}"
+        if os.environ.get("SONGSNAG_HOME"):  # a portable copy has its own catalog, so it's its own instance
+            self.name += "-" + hashlib.sha1(str(paths.data_dir()).encode()).hexdigest()[:8]
         self.server: QLocalServer | None = None
 
     def other_instance_running(self) -> bool:

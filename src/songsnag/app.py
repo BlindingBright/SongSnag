@@ -27,6 +27,39 @@ def setup_logging(debug: bool, name: str = APP_ID) -> Path:
     return logfile
 
 
+def _wake_python_on_signals(app):
+    """Python runs signal handlers only when it gets control back from Qt's event loop.
+
+    On Linux and macOS the signal itself wakes the loop through a socket, so an idle tray never wakes up.
+    Windows has no such hook for GUI apps, so a slow timer gives Python a turn instead.
+    """
+    from PySide6.QtCore import QTimer
+
+    if sys.platform == "win32":
+        heartbeat = QTimer(app, interval=500)
+        heartbeat.timeout.connect(lambda: None)
+        heartbeat.start()
+        return heartbeat
+    import socket
+
+    from PySide6.QtCore import QSocketNotifier
+
+    rsock, wsock = socket.socketpair()
+    for s in (rsock, wsock):
+        s.setblocking(False)
+    signal.set_wakeup_fd(wsock.fileno())
+    notifier = QSocketNotifier(rsock.fileno(), QSocketNotifier.Type.Read, app)
+
+    def drain(*_):
+        try:
+            rsock.recv(64)
+        except OSError:
+            pass
+
+    notifier.activated.connect(drain)  # returning to Python here is what runs the handler
+    return rsock, wsock, notifier
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog=APP_ID,
                                  description="Save the music you play on YouTube in your web browser.")
@@ -49,7 +82,6 @@ def main(argv: list[str] | None = None) -> int:
 
     logfile = setup_logging(args.debug)
 
-    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     from .ui.common import InstanceGuard
@@ -76,9 +108,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
-    heartbeat = QTimer(interval=500)  # lets the Python interpreter run signal handlers
-    heartbeat.timeout.connect(lambda: None)
-    heartbeat.start()
+    keepalive = _wake_python_on_signals(app)  # noqa: F841 - must outlive the event loop
 
     tray = Tray(app, logfile)
     guard.activated.connect(tray.show_library)

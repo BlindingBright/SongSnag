@@ -111,6 +111,7 @@ class LibraryWindow(QWidget):
         self._auto = QTimer(self, interval=5000, timeout=self._auto_refresh)
         self.resize(1000, 600)
         self._sized = False
+        self._seen = None
 
     def _sync_format(self) -> None:
         self.format.setCurrentIndex(max(0, self.format.findData(self.settings.audio_format)))
@@ -133,10 +134,12 @@ class LibraryWindow(QWidget):
         super().hideEvent(e)
 
     def _auto_refresh(self):
-        if not self.table.selectionModel().hasSelection():
+        # Rebuilding thousands of rows is the Library's only real cost, so do it only when something changed.
+        if self.catalog.version() != self._seen and not self.table.selectionModel().hasSelection():
             self.refresh()
 
     def refresh(self) -> None:
+        self._seen = self.catalog.version()
         rows = self.catalog.search(self.search.text().strip(), self.status.currentData())
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))

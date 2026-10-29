@@ -42,6 +42,9 @@ class Tray(QObject):
         self._import_running: set[str] = set()
         self._batch_saved = 0
 
+        self._icon_state = "idle"
+        self._frame = 0
+        self._flash = QTimer(self, interval=700, timeout=self._flash_step)  # runs only while working
         self.icon = QSystemTrayIcon(tray_icon("idle"), self)
         self.icon.setToolTip(APP_NAME)
         self.menu = QMenu()
@@ -178,9 +181,28 @@ class Tray(QObject):
         return f"Listening to {where}" if where else "No browser found"
 
     def _set_icon(self) -> None:
-        state = "paused" if self.settings.paused else "busy" if self.worker.current else "idle"
-        self.icon.setIcon(tray_icon(state))
-        self.icon.setToolTip(f"{APP_NAME}: {self._status_text()}")
+        """Grey and still while idle or paused; colour and a gentle flash only while something is happening.
+
+        The icon is only touched when the state changes: tray hosts redraw (and some visibly blink) on every
+        setIcon, and an idle tray shouldn't wake up at all.
+        """
+        working = not self.settings.paused and bool(self.worker.current or self._import_running)
+        state = "paused" if self.settings.paused else "busy" if working else "idle"
+        if state != self._icon_state:
+            self._icon_state = state
+            self._frame = 0
+            self.icon.setIcon(tray_icon(state))
+            if working:
+                self._flash.start()
+            else:
+                self._flash.stop()
+        tip = f"{APP_NAME}: {self._status_text()}"
+        if tip != self.icon.toolTip():
+            self.icon.setToolTip(tip)
+
+    def _flash_step(self) -> None:
+        self._frame ^= 1
+        self.icon.setIcon(tray_icon("busy2" if self._frame else "busy"))
 
     def _on_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
@@ -220,11 +242,13 @@ class Tray(QObject):
         elif kind == "import_done":
             name, n = payload
             self._import_running.discard(name)
+            self._set_icon()
             self._notify(f"{name}", f"Found {n} new videos to check." if n else "No new videos found.")
             self.worker.kick()
         elif kind == "import_failed":
             name, err = payload
             self._import_running.discard(name)
+            self._set_icon()
             QMessageBox.warning(None, f"{APP_NAME}: {name}", f"The import didn't work:\n\n{err}")
 
     def _notify(self, title: str, body: str, warn: bool = False) -> None:
@@ -358,6 +382,7 @@ class Tray(QObject):
             name = "YouTube account history"
             if name not in self._import_running:
                 self._import_running.add(name)
+                self._set_icon()
                 self._notify(APP_NAME, f"Reading {name}… Music found there will download in the background.")
                 self.worker.import_account(1000)
 
