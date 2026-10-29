@@ -85,7 +85,7 @@ def process(job, dl, settings: config.Settings, catalog: Catalog, emit) -> None:
             log.info("skip %s: %s", vid, reason)
             catalog.finish_skipped(vid, reason, {
                 "title": tags.title, "artist": tags.artist, "channel": info.get("channel"),
-                "duration": info.get("duration")})
+                "duration": info.get("duration"), "song_key": twin["song_key"]})  # its plays count for the song
             emit("skipped", vid)
             return
         album, looked_up = _find_album(settings, tags, info)

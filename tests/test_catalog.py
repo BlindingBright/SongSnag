@@ -191,3 +191,28 @@ def test_song_key_ignores_notes_but_not_versions():
     assert song_key("A", "Song (Live at Wembley)") != song_key("A", "Song")
     assert song_key("A", "Song (Tape B Remix)") != song_key("A", "Song")
     assert song_key("A", "(I Can't Get No) Satisfaction") == "a|satisfaction"
+
+
+def test_previewing_a_suggestion_does_not_download_it(tmp_path):
+    c = cat(tmp_path)
+    c.replace_suggestions([{"video_id": "sugg0000001", "artist": "A", "title": "One"}])
+    c.mark_previewed(["sugg0000001"])
+    assert not c.add_sighting("sugg0000001", source="brave", priority=PRIORITY_LIVE)  # the browser play
+    assert c.get("sugg0000001")["status"] == SKIPPED and c.next_job() is None
+    c.answer_suggestions(["sugg0000001"], "queued")  # liked it after all
+    assert c.next_job()["video_id"] == "sugg0000001"
+
+
+def test_plays_of_duplicate_uploads_count_for_the_saved_song(tmp_path):
+    from songsnag.albums import song_key
+
+    c = cat(tmp_path)
+    c.add_sighting("topic000001", source="album", played=False)
+    c.next_job()
+    c.finish_done("topic000001", {"artist": "A", "title": "Song"})
+    for t in (100, 200, 300):
+        c.add_sighting("video000001", source="brave", played_at=t)
+    c.next_job()
+    c.finish_skipped("video000001", "already saved", {"song_key": song_key("A", "Song")})
+    (r,) = c.listening()
+    assert r["video_id"] == "topic000001" and r["plays"] == 3 and r["last_played"] == 300

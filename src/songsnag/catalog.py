@@ -20,6 +20,7 @@ STATUSES = (QUEUED, WORKING, DONE, SKIPPED, FAILED)
 PRIORITY_LIVE = 10  # played just now
 PRIORITY_COLLECTION = 5  # an album, artist or playlist the user asked for
 PRIORITY_BACKFILL = 0  # imported from history
+PREVIEWED = "previewed in Discover"
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS tracks (
@@ -178,7 +179,7 @@ class Catalog:
 
     def _meta_sql(self, meta: dict) -> tuple[str, list]:
         cols = [k for k in ("title", "artist", "album", "channel", "duration", "path", "codec", "abr",
-                            "album_checked") if k in meta]
+                            "album_checked", "song_key") if k in meta]
         return "".join(f", {c}=?" for c in cols), [meta[c] for c in cols]
 
     def finish_done(self, video_id: str, meta: dict) -> None:
@@ -309,9 +310,17 @@ class Catalog:
 
     # ---- listening profile (for suggestions) -----------------------------
     def listening(self) -> list[sqlite3.Row]:
-        """Saved songs the user actually played, most played first."""
-        return self._all("SELECT video_id, artist, title, plays, last_played FROM tracks"
-                         " WHERE status=? AND plays>0 ORDER BY plays DESC, last_played DESC", (DONE,))
+        """Saved songs the user actually played, most played first.
+
+        Plays of other uploads of the same song (skipped as duplicates) count toward the saved copy.
+        """
+        return self._all(
+            "SELECT * FROM (SELECT d.video_id, d.artist, d.title,"
+            " CASE WHEN d.song_key IS NULL THEN d.plays"
+            "  ELSE (SELECT SUM(t.plays) FROM tracks t WHERE t.song_key = d.song_key) END AS plays,"
+            " CASE WHEN d.song_key IS NULL THEN d.last_played"
+            "  ELSE (SELECT MAX(t.last_played) FROM tracks t WHERE t.song_key = d.song_key) END AS last_played"
+            " FROM tracks d WHERE d.status=?) WHERE plays > 0 ORDER BY plays DESC, last_played DESC", (DONE,))
 
     def known(self) -> tuple[set[str], set[str]]:
         """(every video id in the catalog, every saved song key): what not to suggest again."""
@@ -337,6 +346,15 @@ class Catalog:
     def suggestions(self, state: str = "new") -> list[sqlite3.Row]:
         return self._all("SELECT * FROM suggestions WHERE state=? ORDER BY score DESC", (state,))
 
+    def mark_previewed(self, video_ids: list[str]) -> None:
+        """About to open these in the browser: note them as skipped first, so the play isn't downloaded."""
+        now = time.time()
+        with self._lock, self._db:
+            self._db.executemany(
+                "INSERT OR IGNORE INTO tracks(video_id, status, source, music_hint, seen_title, first_seen, plays,"
+                " note) VALUES(?,?,'suggested',1,?,?,0,?)",
+                [(v, SKIPPED, "", now, PREVIEWED) for v in video_ids])
+
     def answer_suggestions(self, video_ids: list[str], state: str) -> None:
         """state: 'queued' (also adds them to the download queue) or 'dismissed'."""
         with self._lock, self._db:
@@ -348,6 +366,10 @@ class Catalog:
             for r in rows:
                 self.add_sighting(r[0], source="suggested", title=f"{r[1]} - {r[2]}", priority=PRIORITY_COLLECTION,
                                   music_hint=True, played=False)
+            with self._lock, self._db:  # previewed earlier: now wanted after all
+                self._db.executemany(
+                    "UPDATE tracks SET status=?, note=NULL, next_try=0, priority=? WHERE video_id=? AND note=?",
+                    [(QUEUED, PRIORITY_COLLECTION, v, PREVIEWED) for v in video_ids])
 
     # ---- followed artists ------------------------------------------------
     def follows(self) -> list[sqlite3.Row]:

@@ -215,7 +215,9 @@ class DiscoverWindow(QWidget):
         self.on_refresh()
 
     def _listen(self) -> None:
-        for vid in self._selected()[:3]:
+        ids = self._selected()[:3]
+        self.catalog.mark_previewed(ids)  # the browser play must not download it; "Download" still can
+        for vid in ids:
             QDesktopServices.openUrl(QUrl(youtube.watch_url(vid, music=True)))
 
     def _answer(self, state: str, ids: list[str]) -> None:

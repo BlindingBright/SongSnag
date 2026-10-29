@@ -42,17 +42,28 @@ def split_artists(music: Path) -> list[tuple[Path, list[Path]]]:
     return out
 
 
+def _tracked(catalog: Catalog) -> dict[str, str]:
+    return {str(Path(r["path"])): r["video_id"] for r in catalog.search(status="done", limit=10**7) if r["path"]}
+
+
+def untracked(catalog: Catalog, plan: list[tuple[Path, list[Path]]]) -> int:
+    """Files in the folders to merge that SongSnag didn't save; merge() leaves them where they are."""
+    known = _tracked(catalog)
+    return sum(1 for _, others in plan for d in others for p in d.rglob("*") if p.is_file() and str(p) not in known)
+
+
 def merge(catalog: Catalog, plan: list[tuple[Path, list[Path]]]) -> int:
-    """Move the songs, keep the catalog pointing at them, and remove the emptied folders. Returns files moved."""
-    by_path = {}
-    for r in catalog.search(status="done", limit=10**7):
-        if r["path"]:
-            by_path[str(Path(r["path"]))] = r["video_id"]
+    """Move SongSnag's songs, keep the catalog pointing at them, and remove the emptied folders.
+
+    Only files in the catalog move: the music folder may hold the user's own rips, which other players know by path.
+    Returns how many files moved.
+    """
+    by_path = _tracked(catalog)
     moved = 0
     for keep, others in plan:
         for d in others:
             for src in sorted(d.rglob("*")):
-                if not src.is_file():
+                if not src.is_file() or str(src) not in by_path:
                     continue
                 dst = keep / src.relative_to(d)
                 if dst.exists():
@@ -64,9 +75,7 @@ def merge(catalog: Catalog, plan: list[tuple[Path, list[Path]]]) -> int:
                     log.warning("could not move %s: %s", src, e)
                     continue
                 moved += 1
-                vid = by_path.get(str(src))
-                if vid:
-                    catalog.set_path(vid, str(dst))
+                catalog.set_path(by_path[str(src)], str(dst))
             for sub in sorted((p for p in d.rglob("*") if p.is_dir()), key=lambda p: len(p.parts), reverse=True):
                 try:
                     sub.rmdir()
@@ -75,5 +84,5 @@ def merge(catalog: Catalog, plan: list[tuple[Path, list[Path]]]) -> int:
             try:
                 d.rmdir()
             except OSError:
-                log.info("left %s in place: it still has files SongSnag didn't move", d)
+                log.info("left %s in place: it still has files SongSnag didn't save", d)
     return moved

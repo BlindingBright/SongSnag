@@ -280,13 +280,12 @@ class Tray(QObject):
                 self._notify("Discover", f"Found {found} songs you might like." if found
                              else "Nothing new to suggest right now.")
         elif kind == "task_failed":
-            failed = set(self._tasks_running)
-            for name in failed:
-                self._task_done(name)
-            if "resolve" in failed:
-                QMessageBox.warning(None, APP_NAME, f"Couldn't get that:\n\n{payload}")
+            name, err = payload
+            self._task_done(name)
+            if name == "resolve":
+                QMessageBox.warning(None, APP_NAME, f"Couldn't get that:\n\n{err}")
             else:
-                self._notify(APP_NAME, str(payload), warn=True)
+                self._notify(APP_NAME, err, warn=True)
         elif kind == "import_failed":
             name, err = payload
             self._import_running.discard(name)
@@ -363,6 +362,9 @@ class Tray(QObject):
             return
         lines = "\n".join(f"• {', '.join(o.name for o in others)}  →  {keep.name}" for keep, others in plan[:15])
         more = f"\n…and {len(plan) - 15} more" if len(plan) > 15 else ""
+        foreign = tidy.untracked(self.catalog, plan)
+        if foreign:
+            more += (f"\n\n{foreign} files in those folders weren't saved by {APP_NAME}; they stay where they are.")
         if QMessageBox.question(None, f"{APP_NAME}: merge artist folders?",
                                 f"These artists are filed under more than one name:\n\n{lines}{more}\n\n"
                                 "Move their songs into one folder each?") != QMessageBox.StandardButton.Yes:

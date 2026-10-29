@@ -191,13 +191,14 @@ class WorkerSupervisor(QObject):
         heard = []
 
         def on_line(m: dict) -> None:
-            heard.append(m.get("kind"))
-            self.event.emit(m.get("kind"), m.get("payload"))
+            kind, payload = m.get("kind"), m.get("payload")
+            heard.append(kind)
+            self.event.emit(kind, (name, payload) if kind == "task_failed" else payload)
 
         def on_done(code: int, _ran: float) -> None:
             if not heard:
-                self.event.emit("task_failed", f"It stopped unexpectedly (exit {code}). "
-                                               "Details are in songsnag-worker.log.")
+                self.event.emit("task_failed", (name, f"It stopped unexpectedly (exit {code}). "
+                                                      "Details are in songsnag-worker.log."))
             self.kick()  # whatever it queued can start downloading
 
         proc = _Proc(name, ["--worker", *args], self)
