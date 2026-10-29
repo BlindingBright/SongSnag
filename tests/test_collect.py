@@ -49,7 +49,7 @@ class FakeYTM:
 def ytm(monkeypatch):
     fake = FakeYTM()
     monkeypatch.setattr(albums, "_yt", lambda: fake)
-    monkeypatch.setattr(collect, "PAUSE", 0)
+    monkeypatch.setattr(collect, "_client", lambda: fake)
     return fake
 
 
@@ -81,3 +81,9 @@ def test_new_releases(ytm):
     ytm.releases.append("MPREb_new")
     releases, tracks = collect.new_releases("UCband", {"MPREb_lp", "MPREb_single"})
     assert "MPREb_new" in releases and [t["video_id"] for t in tracks] == ["new_track01"]
+
+
+def test_artist_reports_progress_per_album(ytm):
+    seen = []
+    collect.resolve("artist:Band", progress=lambda done, total, label: seen.append((done, total)))
+    assert seen[-1] == (2, 2) and (0, 2) in seen

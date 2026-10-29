@@ -102,6 +102,7 @@ class WorkerSupervisor(QObject):
         self._importer: _Proc | None = None
         self._filler: _Proc | None = None
         self._tasks: dict[str, _Proc] = {}
+        self._cancelled: dict[str, bool] = {}
         self._fail_streak = 0
         self._backoff_until = 0.0
         self._stopping = False
@@ -196,7 +197,9 @@ class WorkerSupervisor(QObject):
             self.event.emit(kind, (name, payload) if kind == "task_failed" else payload)
 
         def on_done(code: int, _ran: float) -> None:
-            if not heard:
+            if self._cancelled.pop(name, False) or self._stopping:
+                return  # stopped by the user, or because SongSnag is quitting: nothing to report
+            if not heard or heard[-1] == "resolve_progress":
                 self.event.emit("task_failed", (name, f"It stopped unexpectedly (exit {code}). "
                                                       "Details are in songsnag-worker.log."))
             self.kick()  # whatever it queued can start downloading
@@ -206,6 +209,12 @@ class WorkerSupervisor(QObject):
         proc.done.connect(on_done)
         self._tasks[name] = proc
         return True
+
+    def cancel(self, name: str) -> None:
+        proc = self._tasks.get(name)
+        if proc and proc.running():
+            self._cancelled[name] = True
+            proc.stop()
 
     def stop(self) -> None:
         self._stopping = True

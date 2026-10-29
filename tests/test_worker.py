@@ -139,7 +139,7 @@ def test_same_song_from_another_upload_is_skipped(cat, tmp_path):
 def test_one_shot_tasks(cat, monkeypatch, tmp_path):
     from songsnag import collect, discover
 
-    def fake_resolve(spec):
+    def fake_resolve(spec, progress=None):
         if spec == "artist:nobody":
             raise collect.NotFound("No artist called nobody")
         return collect.Collection("album", "LP by Band", [{"video_id": "lp_track_01", "title": "One",

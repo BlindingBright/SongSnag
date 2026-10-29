@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog, QSystemTrayIcon
 
 from .. import APP_NAME, autostart, browsers, config, paths, ytdlp_update
 from ..catalog import DONE, FAILED, QUEUED, SKIPPED, WORKING, Catalog
@@ -43,6 +43,7 @@ class Tray(QObject):
         self._import_running: set[str] = set()
         self._tasks_running: set[str] = set()  # resolve / follows / discover jobs, for the icon and status
         self._follow_wanted = False
+        self._lookup: QProgressDialog | None = None  # shown while an album/artist is being looked up
         self.discover_window: DiscoverWindow | None = None
         self._batch_saved = 0
 
@@ -264,8 +265,11 @@ class Tray(QObject):
             self._set_icon()
             self._notify(f"{name}", f"Found {n} new videos to check." if n else "No new videos found.")
             self.worker.kick()
+        elif kind == "resolve_progress":
+            self._lookup_progress(*payload)
         elif kind == "resolved":
             self._task_done("resolve")
+            self._close_lookup()
             self._on_resolved(payload)
         elif kind == "follows_done":
             self._task_done("follows")
@@ -285,6 +289,7 @@ class Tray(QObject):
             name, err = payload
             self._task_done(name)
             if name == "resolve":
+                self._close_lookup()
                 QMessageBox.warning(None, APP_NAME, f"Couldn't get that:\n\n{err}")
             else:
                 self._notify(APP_NAME, err, warn=True)
@@ -485,6 +490,46 @@ class Tray(QObject):
         self._follow_wanted = follow
         if not self._task("resolve", ["--resolve", spec]):
             self._notify(APP_NAME, "Still looking up the last one; try again in a moment.")
+            return
+        self._show_lookup(spec)
+
+    def _show_lookup(self, spec: str) -> None:
+        """A small window that opens at once, so a long artist lookup never looks like a freeze."""
+        kind, _, rest = spec.partition(":")
+        what = rest.replace("\t", " – ").strip() if kind in ("artist", "album", "follow") else "that link"
+        dlg = QProgressDialog(f"Looking up {what} on YouTube Music…", "Cancel", 0, 0)
+        dlg.setWindowTitle(f"{APP_NAME}: looking up")
+        dlg.setWindowIcon(app_icon())
+        dlg.setMinimumDuration(0)
+        dlg.setMinimumWidth(420)
+        dlg.setAutoReset(False)
+        dlg.setAutoClose(False)
+        dlg.canceled.connect(self._cancel_lookup)
+        dlg.show()
+        self._lookup = dlg
+
+    def _lookup_progress(self, done: int, total: int, label: str) -> None:
+        dlg = self._lookup
+        if not dlg:
+            return
+        if total:
+            dlg.setRange(0, total)
+            dlg.setValue(done)
+            dlg.setLabelText(f"Reading album {done} of {total}" + (f": {label}" if label else "…"))
+        elif label:
+            dlg.setLabelText(label)
+
+    def _close_lookup(self) -> None:
+        if self._lookup:
+            self._lookup.canceled.disconnect(self._cancel_lookup)
+            self._lookup.close()
+            self._lookup.deleteLater()
+            self._lookup = None
+
+    def _cancel_lookup(self) -> None:
+        self.worker.cancel("resolve")
+        self._task_done("resolve")
+        self._close_lookup()
 
     def _on_resolved(self, c: dict) -> None:
         from ..worker import queue_tracks

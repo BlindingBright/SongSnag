@@ -8,7 +8,9 @@ the tray, so the tray doesn't carry ytmusicapi and requests around.
 from __future__ import annotations
 
 import logging
-import time
+import threading
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from urllib.parse import parse_qs, urlsplit
 
@@ -17,7 +19,12 @@ from .albums import NOT_THE_ALBUM, Unavailable, norm, song_key
 
 log = logging.getLogger(__name__)
 
-PAUSE = 0.3  # seconds between album fetches, to stay polite
+PARALLEL = 4  # albums fetched at once: an artist with 50 releases takes seconds, not half a minute
+Progress = Callable[[int, int, str], None]  # (done, total, what's being read)
+
+
+def _quiet(done: int, total: int, label: str) -> None:
+    pass
 
 
 @dataclass
@@ -83,24 +90,58 @@ def artist_releases(channel_id: str) -> tuple[str, list[dict]]:
     return a.get("name") or "", releases
 
 
-def artist(channel_id: str, *, fetch_tracks: bool = True) -> Collection:
+def artist(channel_id: str, *, fetch_tracks: bool = True, progress: Progress = _quiet) -> Collection:
+    progress(0, 0, "Reading the artist's page…")
     name, releases = artist_releases(channel_id)
     # Studio albums first, then singles/EPs, compilations last: the first copy of a song is the one kept.
     order = sorted(releases, key=lambda r: albums._rank({"type": r.get("type") or "single", "artists": [],
                                                          "title": r.get("title")}, "") >= NOT_THE_ALBUM)
     out = Collection("artist", name, artist_id=channel_id, releases=[r["browseId"] for r in releases])
     if fetch_tracks:
-        out.tracks = unique(tracks_of(order))
+        out.tracks = unique(tracks_of(order, progress))
     return out
 
 
-def tracks_of(releases: list[dict]) -> list[dict]:
-    tracks = []
-    for i, r in enumerate(releases):
-        if i:
-            time.sleep(PAUSE)
-        tracks += release_tracks(r["browseId"])[1]
-    return tracks
+_local = threading.local()
+
+
+def _client():
+    """A YouTube Music client for the current thread (one isn't safe to share between threads)."""
+    if not hasattr(_local, "client"):
+        from ytmusicapi import YTMusic
+
+        _local.client = YTMusic()
+    return _local.client
+
+
+def _fetch(browse_id: str) -> list[dict]:
+    if browse_id not in albums._album_cache:  # the download's album tags reuse it
+        albums._album_cache[browse_id] = albums._call(_client().get_album, browse_id) or {}
+    album = albums._album_cache[browse_id]
+    name = album.get("title") or ""
+    return [t for t in (_track(x, name, browse_id) for x in album.get("tracks") or []) if t]
+
+
+def tracks_of(releases: list[dict], progress: Progress = _quiet) -> list[dict]:
+    """Every release's tracks, in release order, fetched a few at a time."""
+    total, done = len(releases), 0
+    lock = threading.Lock()
+
+    def one(r):
+        nonlocal done
+        out = _fetch(r["browseId"])
+        with lock:
+            done += 1
+            progress(done, total, r.get("title") or "")
+        return out
+
+    progress(0, total, "")
+    pool = ThreadPoolExecutor(PARALLEL, thread_name_prefix="album")
+    try:
+        results = list(pool.map(one, releases))  # map keeps release order: album copies stay first
+    finally:
+        pool.shutdown(wait=False, cancel_futures=True)  # stopped (Cancel / quit): drop what hasn't started
+    return [t for chunk in results for t in chunk]
 
 
 def unique(tracks: list[dict]) -> list[dict]:
@@ -152,7 +193,7 @@ def _search_album(query: str, artist_name: str = "") -> str:
     return pick["browseId"]
 
 
-def from_url(url: str) -> Collection:
+def from_url(url: str, progress: Progress = _quiet) -> Collection:
     parts = urlsplit(url.strip())
     host = (parts.hostname or "").lower()
     if not host.endswith(("youtube.com", "youtu.be")):
@@ -162,15 +203,16 @@ def from_url(url: str) -> Collection:
     if path.startswith("/browse/MPREb_"):
         return album(path.split("/")[2])
     if path.startswith("/channel/UC"):
-        return artist(path.split("/")[2])
+        return artist(path.split("/")[2], progress=progress)
     if query.get("list"):
         return playlist(query["list"][0])
     if path.startswith(("/@", "/c/", "/user/")):
+        progress(0, 0, "Finding that channel…")
         cid, name = _channel_of_handle(url)
         try:
-            return artist(cid)
+            return artist(cid, progress=progress)
         except NotFound:  # a YouTube channel that isn't the artist's YouTube Music page: find it by name
-            return artist(_search_artist(name))
+            return artist(_search_artist(name), progress=progress)
     raise NotFound("Paste a link to an album, artist or playlist (not a single song).")
 
 
@@ -186,16 +228,17 @@ def _channel_of_handle(url: str) -> tuple[str, str]:
     return cid, youtube.channel_artist(info.get("channel") or info.get("uploader") or "")
 
 
-def resolve(spec: str) -> Collection:
+def resolve(spec: str, progress: Progress = _quiet) -> Collection:
     """spec: a link, "artist:NAME", "album:TITLE", or "album:ARTIST\\tTITLE"."""
     kind, _, rest = spec.partition(":")
     if kind in ("http", "https") or spec.startswith(("youtube.com", "music.youtube.com", "www.youtube.com")):
-        return from_url(spec if "://" in spec else "https://" + spec)
+        return from_url(spec if "://" in spec else "https://" + spec, progress)
     rest = rest.strip()
     if not rest:
         raise NotFound("Type a name first.")
     if kind == "artist":
-        return artist(_search_artist(rest))
+        progress(0, 0, f"Finding {rest} on YouTube Music…")
+        return artist(_search_artist(rest), progress=progress)
     if kind == "follow":  # follow only: no back catalog, so skip fetching every album's tracks
         return artist(_search_artist(rest) if not rest.startswith("UC") else rest, fetch_tracks=False)
     if kind == "album":

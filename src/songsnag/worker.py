@@ -285,7 +285,8 @@ def resolve(spec: str):
     def run(emit, catalog: Catalog, settings) -> None:
         from . import collect
 
-        emit("resolved", collect.resolve(spec).to_json())
+        emit("resolved", collect.resolve(spec, lambda done, total, label: emit(
+            "resolve_progress", [done, total, label])).to_json())
 
     return run
 
