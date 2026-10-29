@@ -213,7 +213,7 @@ class Tray(QObject):
                 self._flash.start()
             else:
                 self._flash.stop()
-        tip = f"{APP_NAME}: {self._status_text()}"
+        tip = self._status_text()
         if tip != self.icon.toolTip():
             self.icon.setToolTip(tip)
 
@@ -231,6 +231,8 @@ class Tray(QObject):
             self.worker.kick()
         elif kind in ("busy", "idle"):
             self._set_icon()
+            if self.library and self.library.isVisible():
+                self.library.update_activity()
             if kind == "idle" and self._batch_saved and not self._import_running:
                 self._notify("History import finished", f"Saved {self._batch_saved} songs.")
                 self._batch_saved = 0
@@ -245,7 +247,7 @@ class Tray(QObject):
                          else "Every song has already been checked.")
         elif kind == "albums_progress":
             done, total, found = payload
-            self.icon.setToolTip(f"{APP_NAME}: album info {done}/{total} ({found} found)")
+            self.icon.setToolTip(f"Album info {done}/{total} ({found} found)")
         elif kind == "albums_done":
             done, found = payload
             if done:
@@ -425,7 +427,7 @@ class Tray(QObject):
     def show_library(self) -> None:
         if self.library is None:
             self.library = LibraryWindow(self.catalog, self.settings, self.worker.kick, self.set_format,
-                                         self.fill_albums, self.get_music)
+                                         self.fill_albums, self.get_music, activity=self._status_text)
         self.library.show()
         self.library.raise_()
         self.library.activateWindow()

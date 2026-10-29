@@ -167,6 +167,12 @@ class Catalog:
                 self._db.execute("UPDATE tracks SET status=? WHERE video_id=?", (WORKING, row["video_id"]))
             return row
 
+    def upcoming(self, limit: int = 6) -> list[sqlite3.Row]:
+        """What the worker is on now, then what it will do next (the order next_job() picks them)."""
+        return self._all("SELECT * FROM tracks WHERE status=? OR (status=? AND next_try<=?)"
+                         " ORDER BY status=? DESC, priority DESC, first_seen LIMIT ?",
+                         (WORKING, QUEUED, time.time(), WORKING, limit))
+
     def pending_count(self) -> int:
         return self._all("SELECT COUNT(*) FROM tracks WHERE status IN (?, ?)", (QUEUED, WORKING))[0][0]
 

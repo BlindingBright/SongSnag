@@ -216,3 +216,13 @@ def test_plays_of_duplicate_uploads_count_for_the_saved_song(tmp_path):
     c.finish_skipped("video000001", "already saved", {"song_key": song_key("A", "Song")})
     (r,) = c.listening()
     assert r["video_id"] == "topic000001" and r["plays"] == 3 and r["last_played"] == 300
+
+
+def test_upcoming_lists_the_current_song_then_the_queue_in_order(tmp_path):
+    c = cat(tmp_path)
+    c.add_sighting("backfill001", source="takeout", priority=PRIORITY_BACKFILL)
+    c.add_sighting("album000001", source="album", priority=5, played=False)
+    c.add_sighting("live0000001", source="brave", priority=PRIORITY_LIVE)
+    c.next_job()  # the live play is being downloaded
+    c.finish_failed("backfill001", "net", retry_in=600)  # waiting for a retry: not "up next"
+    assert [r["video_id"] for r in c.upcoming()] == ["live0000001", "album000001"]
