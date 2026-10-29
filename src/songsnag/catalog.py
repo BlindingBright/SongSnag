@@ -71,6 +71,20 @@ CREATE TABLE IF NOT EXISTS suggestions (
 """
 
 
+# Every insert and update stamps the row, whichever code path (or process) made it. The WHEN clause keeps the
+# trigger's own update from firing it again.
+_NOW = "((julianday('now') - 2440587.5) * 86400.0)"
+_TRIGGERS = f"""
+CREATE TRIGGER IF NOT EXISTS tracks_inserted AFTER INSERT ON tracks BEGIN
+    UPDATE tracks SET changed = {_NOW} WHERE video_id = NEW.video_id;
+END;
+CREATE TRIGGER IF NOT EXISTS tracks_updated AFTER UPDATE ON tracks WHEN NEW.changed IS OLD.changed BEGIN
+    UPDATE tracks SET changed = {_NOW} WHERE video_id = NEW.video_id;
+END;
+CREATE INDEX IF NOT EXISTS tracks_changed ON tracks(changed);
+"""
+
+
 class Catalog:
     def __init__(self, path: Path, recover: bool = False):
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +101,9 @@ class Catalog:
             for col, kind in (("album_id", "TEXT"), ("track", "INTEGER")):  # 1.1: the release a song was queued
                 if col not in columns:                                     # from, and its track number
                     self._db.execute(f"ALTER TABLE tracks ADD COLUMN {col} {kind}")
+            if "changed" not in columns:  # 1.1: when a row last changed, so the Library reloads only those
+                self._db.execute("ALTER TABLE tracks ADD COLUMN changed REAL")
+            self._db.executescript(_TRIGGERS)
             fresh = "song_key" not in columns
             if fresh:  # added in 1.1: artist+title, to spot the same song from another upload
                 self._db.execute("ALTER TABLE tracks ADD COLUMN song_key TEXT")
@@ -250,7 +267,7 @@ class Catalog:
     def recent_downloads(self, limit: int = 10) -> list[sqlite3.Row]:
         return self._all("SELECT * FROM tracks WHERE status=? ORDER BY downloaded_at DESC LIMIT ?", (DONE, limit))
 
-    def search(self, text: str = "", status: str | None = None, limit: int = 5000) -> list[sqlite3.Row]:
+    def search(self, text: str = "", status: str | None = None, limit: int | None = 5000) -> list[sqlite3.Row]:
         where, args = [], []
         if status:
             where.append("status=?")
@@ -263,7 +280,41 @@ class Catalog:
         if where:
             sql += " WHERE " + " AND ".join(where)
         sql += " ORDER BY COALESCE(downloaded_at, first_seen) DESC LIMIT ?"
-        return self._all(sql, (*args, limit))
+        return self._all(sql, (*args, -1 if limit is None else limit))  # -1: no limit
+
+    LIBRARY_COLUMNS = ("video_id", "status", "priority", "next_try", "first_seen", "downloaded_at", "artist",
+                       "title", "seen_title", "album", "track", "codec", "abr", "plays", "source", "note", "path")
+
+    def library_rows(self, text: str = "", status: str | None = None, since: float | None = None) -> list[tuple]:
+        """Everything the Library shows, as plain tuples in LIBRARY_COLUMNS order (the window sorts them).
+
+        since: only rows changed at or after that time (seconds), for cheap incremental reloads.
+        """
+        where, args = [], []
+        if since is not None:
+            where.append("changed >= ?")
+            args.append(since)
+        if status:
+            where.append("status=?")
+            args.append(status)
+        if text:
+            like = f"%{text}%"
+            where.append("(artist LIKE ? OR title LIKE ? OR seen_title LIKE ? OR album LIKE ? OR video_id=?)")
+            args += [like, like, like, like, text]
+        sql = f"SELECT {', '.join(self.LIBRARY_COLUMNS)} FROM tracks" + (" WHERE " + " AND ".join(where) if where
+                                                                         else "")
+        with self._lock:
+            cur = self._db.cursor()
+            cur.row_factory = None  # plain tuples: several times faster than sqlite3.Row for big libraries
+            return cur.execute(sql, args).fetchall()
+
+    def changed_ids(self, since: float) -> set[str]:
+        with self._lock:
+            return {r[0] for r in self._db.execute("SELECT video_id FROM tracks WHERE changed >= ?", (since,))}
+
+    def ids(self) -> set[str]:
+        with self._lock:
+            return {r[0] for r in self._db.execute("SELECT video_id FROM tracks")}
 
     def done_under(self, folder: Path) -> list[sqlite3.Row]:
         prefix = str(folder.resolve())

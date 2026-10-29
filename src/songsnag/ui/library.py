@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, QUrl
+from PySide6.QtCore import QAbstractTableModel, QItemSelection, QItemSelectionModel, QModelIndex, Qt, QTimer, QUrl
 from PySide6.QtGui import QBrush, QDesktopServices, QFont, QKeySequence, QPalette, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -19,8 +19,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QSizePolicy,
-    QTableWidget,
-    QTableWidgetItem,
+    QTableView,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -33,23 +32,123 @@ from .common import app_icon, open_path, reveal
 
 STATUS_LABELS = {DONE: "Saved", QUEUED: "Waiting", WORKING: "Downloading…", SKIPPED: "Skipped", FAILED: "Failed"}
 COLUMNS = ("Artist", "Title", "Album", "#", "Status", "Quality", "Plays", "Source", "Date", "Note")
-SORT_KEY = Qt.ItemDataRole.UserRole + 2
-
-
-class Item(QTableWidgetItem):
-    """A cell that sorts by its SORT_KEY when it has one (dates, track numbers), else by its text."""
-
-    def __lt__(self, other):
-        a, b = self.data(SORT_KEY), other.data(SORT_KEY)
-        if a is not None and b is not None:
-            return a < b
-        return super().__lt__(other)
+WIDTHS = (200, 260, 200, 40, 110, 110, 50, 130, 130)  # the last column stretches
+DATE = COLUMNS.index("Date")
+SLACK = 2.0  # seconds of overlap between incremental reloads, so a write landing mid-reload isn't missed
+FULL_EVERY = 300  # seconds: a full reload this often while the window is open
 SOURCES = {
     **{b: f"Played in {app}" for b, app in browsers.APPS.items()},
     **{f"{b}-history": f"{app} history" for b, app in browsers.APPS.items()},
     "youtube-history": "YouTube history", "takeout": "Takeout", "album": "Album", "artist": "Artist",
     "playlist": "Playlist", "suggested": "Suggested", "followed": "New release",
 }
+
+
+class Row:
+    """One catalog row: its sort keys up front, its display text only once it's on screen."""
+
+    __slots__ = ("raw", "video_id", "path", "status", "keys", "_text")
+
+    def __init__(self, raw: tuple, position: dict[str, int]):
+        (vid, status, _priority, next_try, first_seen, downloaded_at, artist, title, seen_title, album, track,
+         codec, _abr, plays, source, note, path) = raw
+        self.raw, self.video_id, self.path, self.status, self._text = raw, vid, path, status, None
+        stamp = downloaded_at or first_seen or 0
+        # Newest first puts the song downloading now on top, then the queue in the order it'll download.
+        order = stamp
+        if status == WORKING:
+            order = 4e12
+        elif vid in position:
+            order = 3e12 - position[vid]
+        elif status == QUEUED:
+            order = 2e12 - (next_try or 0)
+        title = title or seen_title or vid
+        album_cf = (album or "").casefold()
+        self.keys = ((artist or "").casefold(), title.casefold(), album_cf,
+                     (album_cf, track or 0),  # by #: each album together, in track order
+                     (status != WORKING, status, -order), codec or "", plays or 0, source or "", order,
+                     (note or "").casefold())
+
+    def text(self, position: dict[str, int]) -> tuple:
+        if self._text is None:
+            (vid, status, _p, next_try, first_seen, downloaded_at, artist, title, seen_title, album, track, codec,
+             abr, plays, source, note, _path) = self.raw
+            label = STATUS_LABELS.get(status, status)
+            if vid in position:
+                label = f"Waiting #{position[vid]}"
+            elif status == QUEUED:
+                label = f"Retry at {datetime.fromtimestamp(next_try or 0).strftime('%H:%M')}"
+            quality = (f"{codec} {round(abr)} kbps" if abr else codec) if codec else ""
+            stamp = downloaded_at or first_seen or 0
+            self._text = (artist or "", title or seen_title or vid, album or "", str(track or ""), label, quality,
+                          str(plays), SOURCES.get(source, source or ""),
+                          datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M") if stamp else "", note or "")
+        return self._text
+
+
+class LibraryModel(QAbstractTableModel):
+    """The Library's rows. Qt asks only for the cells on screen, and sorting is one Python sort, so tens of
+    thousands of songs stay quick (a QTableWidget makes an object per cell and calls back into Python for
+    every comparison while sorting)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.rows: list[Row] = []
+        self.position: dict[str, int] = {}  # queue positions, for "Waiting #3"
+        self.sort_column, self.sort_order = DATE, Qt.SortOrder.DescendingOrder
+        self.bold = QFont()
+        self.bold.setBold(True)
+        self.highlight = self.dim = None
+
+    def set_rows(self, rows: list[Row], position: dict[str, int] | None = None) -> None:
+        self.beginResetModel()
+        self.rows, self.position = rows, position or {}
+        self._sort()
+        self.endResetModel()
+
+    def rowCount(self, parent=QModelIndex()):  # noqa: B008 - Qt's signature
+        return 0 if parent.isValid() else len(self.rows)
+
+    def columnCount(self, parent=QModelIndex()):  # noqa: B008
+        return 0 if parent.isValid() else len(COLUMNS)
+
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return COLUMNS[section]
+        return None
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        row = self.rows[index.row()]
+        if role == Qt.ItemDataRole.DisplayRole:
+            return row.text(self.position)[index.column()]
+        if role == Qt.ItemDataRole.ToolTipRole and index.column() in (1, 2, 9):
+            return row.text(self.position)[index.column()] or None
+        if row.status == WORKING:  # the song being downloaded right now stands out
+            if role == Qt.ItemDataRole.FontRole:
+                return self.bold
+            if role == Qt.ItemDataRole.BackgroundRole:
+                return self.highlight
+        elif row.status == QUEUED and role == Qt.ItemDataRole.ForegroundRole:
+            return self.dim
+        return None
+
+    def sort(self, column, order=Qt.SortOrder.AscendingOrder):
+        self.sort_column, self.sort_order = column, order
+        self.layoutAboutToBeChanged.emit()
+        old = {r.video_id: i for i, r in enumerate(self.rows)}
+        self._sort()
+        # Keep selections and the current row on the same songs after reordering.
+        moved = {old[r.video_id]: i for i, r in enumerate(self.rows)}
+        persistent = self.persistentIndexList()
+        self.changePersistentIndexList(persistent, [self.index(moved[i.row()], i.column()) for i in persistent])
+        self.layoutChanged.emit()
+
+    def _sort(self) -> None:
+        reverse = self.sort_order == Qt.SortOrder.DescendingOrder
+        c = self.sort_column
+        if c != DATE:  # ties stay newest first (Python's sort is stable)
+            self.rows.sort(key=lambda r: r.keys[DATE], reverse=True)
+        self.rows.sort(key=lambda r: r.keys[c], reverse=reverse)
 
 
 class LibraryWindow(QWidget):
@@ -74,17 +173,22 @@ class LibraryWindow(QWidget):
             self.status.addItem(STATUS_LABELS[key], key)
         self.summary = QLabel()
 
-        self.table = QTableWidget(0, len(COLUMNS))
-        self.table.setHorizontalHeaderLabels(COLUMNS)
+        self.model = LibraryModel(self)
+        self.table = QTableView()
+        self.table.setModel(self.model)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.table.setSortingEnabled(True)
         self.table.verticalHeader().hide()
+        self.table.verticalHeader().setDefaultSectionSize(self.table.fontMetrics().height() + 10)  # no measuring
         self.table.setAlternatingRowColors(True)
+        self.table.setWordWrap(False)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
-        header.setSortIndicator(COLUMNS.index("Date"), Qt.SortOrder.DescendingOrder)
+        for c, w in enumerate(WIDTHS):
+            header.resizeSection(c, w)
+        header.setSortIndicator(DATE, Qt.SortOrder.DescendingOrder)
+        self.table.setSortingEnabled(True)  # clicking a header calls LibraryModel.sort
         self.table.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._menu)
         self.table.doubleClicked.connect(lambda _: self._play())
@@ -126,20 +230,20 @@ class LibraryWindow(QWidget):
         lay.addWidget(self.table, 1)
         lay.addLayout(bottom)
 
-        self._debounce = QTimer(self, singleShot=True, interval=250, timeout=self.refresh)
+        self._debounce = QTimer(self, singleShot=True, interval=250, timeout=lambda: self.refresh(full=True))
         self.search.textChanged.connect(self._debounce.start)
-        self.status.currentIndexChanged.connect(self.refresh)
+        self.status.currentIndexChanged.connect(lambda _: self.refresh(full=True))
         QShortcut(QKeySequence.StandardKey.Find, self, activated=self.search.setFocus)
         self._auto = QTimer(self, interval=5000, timeout=self._auto_refresh)
         self.resize(1000, 600)
-        self._sized = False
-        self._seen = None
-        self._bold = QFont(self.table.font())
-        self._bold.setBold(True)
+        self._seen = self._since = None
+        self._full_at = 0.0
+        self.model.bold = QFont(self.table.font())
+        self.model.bold.setBold(True)
         hl = self.palette().color(QPalette.ColorRole.Highlight)
         hl.setAlpha(60)
-        self._highlight = QBrush(hl)
-        self._dim = QBrush(self.palette().color(QPalette.ColorRole.PlaceholderText))
+        self.model.highlight = QBrush(hl)
+        self.model.dim = QBrush(self.palette().color(QPalette.ColorRole.PlaceholderText))
 
     def _sync_format(self) -> None:
         self.format.setCurrentIndex(max(0, self.format.findData(self.settings.audio_format)))
@@ -159,12 +263,15 @@ class LibraryWindow(QWidget):
 
     def hideEvent(self, e):
         self._auto.stop()
+        self.model.set_rows([])  # a closed Library holds no rows: the tray stays small in the background
+        self._seen = self._since = None
         super().hideEvent(e)
 
     def _auto_refresh(self):
-        # Rebuilding thousands of rows is the Library's only real cost, so do it only when something changed.
-        if self.catalog.version() != self._seen and not self.table.selectionModel().hasSelection():
-            self.refresh()
+        # Only when something changed, and then only the rows that did (a full reload now and then catches
+        # anything a timestamp can't, like a song removed by another window).
+        if self.catalog.version() != self._seen:
+            self.refresh(full=time.time() - self._full_at > FULL_EVERY)
 
     def update_activity(self) -> None:
         """ "Checking: …" / "Downloading: …" in the bottom bar while the worker is on a song, else nothing."""
@@ -182,87 +289,79 @@ class LibraryWindow(QWidget):
             return f"{r['artist']} – {r['title']}" if r["artist"] else r["title"]
         return r["seen_title"] or r["video_id"]
 
-    def refresh(self) -> None:
+    def refresh(self, full: bool = True) -> None:
+        """Reload the list. full=False fetches only rows changed since the last reload and reuses the rest."""
         self._seen = self.catalog.version()
         self.update_activity()
-        rows = self.catalog.search(self.search.text().strip(), self.status.currentData())
+        text, status = self.search.text().strip(), self.status.currentData()
+        started = time.time()
+        old = {r.video_id: r for r in self.model.rows}
+        if full or self._since is None:
+            raws = {r[0]: r for r in self.catalog.library_rows(text, status)}
+            keep: dict[str, Row] = {}
+            self._full_at = started
+        else:
+            since = self._since - SLACK
+            fetched = self.catalog.library_rows(text, status, since=since)
+            gone = self.catalog.changed_ids(since) - {r[0] for r in fetched}  # changed, no longer matches the filter
+            changed = [r for r in fetched if r[0] not in old or old[r[0]].raw != r]  # overlap re-reads shown rows
+            fresh = {r[0] for r in changed}
+            if not changed and not (gone & old.keys()):
+                self._since = started
+                self._counts()
+                return  # e.g. the tray wrote a setting: nothing in this view moved
+            keep = {v: r for v, r in old.items() if v not in fresh and v not in gone}
+            raws = {v: r.raw for v, r in keep.items()} | {r[0]: r for r in changed}
+        self._since = started
+
         # Queue position, in the order the worker takes songs (live plays first, then oldest first).
-        now = time.time()
-        ready = sorted((r for r in rows if r["status"] == QUEUED and (r["next_try"] or 0) <= now),
-                       key=lambda r: (-(r["priority"] or 0), r["first_seen"] or 0))
-        position = {r["video_id"]: i + 1 for i, r in enumerate(ready)}
-        date_col, track_col = COLUMNS.index("Date"), COLUMNS.index("#")
-        self.table.setSortingEnabled(False)
-        self.table.setRowCount(len(rows))
-        for i, r in enumerate(rows):
-            quality = ""
-            if r["codec"]:
-                quality = f"{r['codec']} {round(r['abr'])} kbps" if r["abr"] else r["codec"]
-            stamp = r["downloaded_at"] or r["first_seen"] or 0
-            status = STATUS_LABELS.get(r["status"], r["status"])
-            # Newest first puts the song downloading now on top, then the queue in the order it'll download.
-            order = stamp
-            if r["status"] == WORKING:
-                order = 4e12
-            elif r["video_id"] in position:
-                status, order = f"Waiting #{position[r['video_id']]}", 3e12 - position[r["video_id"]]
-            elif r["status"] == QUEUED:
-                retry = datetime.fromtimestamp(r["next_try"]).strftime("%H:%M")
-                status, order = f"Retry at {retry}", 2e12 - (r["next_try"] or 0)
-            values = (
-                r["artist"] or "",
-                r["title"] or r["seen_title"] or r["video_id"],
-                r["album"] or "",
-                r["track"] or "",
-                status,
-                quality,
-                r["plays"],
-                SOURCES.get(r["source"], r["source"] or ""),
-                datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M") if stamp else "",
-                r["note"] or "",
-            )
-            working, waiting = r["status"] == WORKING, r["status"] == QUEUED
-            for c, v in enumerate(values):
-                item = Item()
-                item.setData(Qt.ItemDataRole.DisplayRole, v)
-                if c == date_col:
-                    item.setData(SORT_KEY, order)
-                elif c == track_col:  # sorting by # keeps each album together, in track order
-                    item.setData(SORT_KEY, ((r["album"] or "").casefold(), r["track"] or 0))
-                if working:  # the song being downloaded right now stands out
-                    item.setFont(self._bold)
-                    item.setBackground(self._highlight)
-                elif waiting:
-                    item.setForeground(self._dim)
-                if c == 0:
-                    item.setData(Qt.ItemDataRole.UserRole, r["video_id"])
-                    item.setData(Qt.ItemDataRole.UserRole + 1, r["path"])
-                self.table.setItem(i, c, item)
-        self.table.setSortingEnabled(True)
-        if not self._sized and rows:
-            self.table.resizeColumnsToContents()
-            for c in (0, 1, 2):
-                self.table.setColumnWidth(c, min(self.table.columnWidth(c), 240))
-            self.table.setColumnWidth(track_col, 36)
-            self._sized = True
+        ready = sorted((r for r in raws.values() if r[1] == QUEUED and (r[3] or 0) <= started),  # status, next_try
+                       key=lambda r: (-(r[2] or 0), r[4] or 0))  # priority, first_seen
+        position = {r[0]: i + 1 for i, r in enumerate(ready)}
+        was_queued = self.model.position
+        rows = [keep[v] if v in keep and v not in position and v not in was_queued else Row(raw, position)
+                for v, raw in raws.items()]
+
+        # Reloading must not lose the user's place: remember the selection, current row and scroll position.
+        chosen = {v for v, _ in self._selected()}
+        current = self.table.currentIndex()
+        current_id = self.model.rows[current.row()].video_id if current.isValid() else None
+        scroll = self.table.verticalScrollBar().value()
+        self.model.set_rows(rows, position)
+        if chosen or current_id:
+            where = {r.video_id: i for i, r in enumerate(self.model.rows)}
+            sel = QItemSelection()
+            for v in chosen:
+                if v in where:
+                    sel.select(self.model.index(where[v], 0), self.model.index(where[v], len(COLUMNS) - 1))
+            sm = self.table.selectionModel()
+            sm.select(sel, QItemSelectionModel.SelectionFlag.ClearAndSelect)
+            if current_id in where:
+                sm.setCurrentIndex(self.model.index(where[current_id], current.column()),
+                                   QItemSelectionModel.SelectionFlag.NoUpdate)
+        self.table.verticalScrollBar().setValue(scroll)
+        self._counts()
+
+    def _counts(self) -> None:
         n = self.catalog.counts()
         self.summary.setText(f"{n[DONE]} saved · {n[QUEUED] + n[WORKING]} waiting · "
                              f"{n[SKIPPED]} skipped · {n[FAILED]} failed")
 
     def _selected(self) -> list[tuple[str, str | None]]:
-        rows = sorted({i.row() for i in self.table.selectedIndexes()})
-        out = []
-        for r in rows:
-            item = self.table.item(r, 0)
-            out.append((item.data(Qt.ItemDataRole.UserRole), item.data(Qt.ItemDataRole.UserRole + 1)))
-        return out
+        rows = self.model.rows
+        picked = sorted(i.row() for i in self.table.selectionModel().selectedRows() if i.row() < len(rows))
+        return [(rows[i].video_id, rows[i].path) for i in picked]
+
+    def _selected_statuses(self) -> set[str]:
+        rows = self.model.rows
+        return {rows[i.row()].status for i in self.table.selectionModel().selectedRows() if i.row() < len(rows)}
 
     def _menu(self, pos) -> None:
         sel = self._selected()
         if not sel:
             return
         m = QMenu(self)
-        has_file = any(p and Path(p).exists() for _, p in sel)
+        has_file = any(p and Path(p).exists() for _, p in sel[:50])
         m.addAction("Play", self._play).setEnabled(has_file)
         m.addAction("Show in folder", self._reveal).setEnabled(has_file)
         m.addAction("Open on YouTube", self._open_youtube)
@@ -277,7 +376,7 @@ class LibraryWindow(QWidget):
             m.addAction(f"Get everything by {artist}", lambda: self.on_get(f"artist:{artist}"))
             m.addAction(f"Follow {artist} (new releases only)", lambda: self.on_get(f"follow:{artist}", True))
         m.addSeparator()
-        statuses = {(self.catalog.get(v) or {"status": None})["status"] for v, _ in sel[:200]}
+        statuses = self._selected_statuses()
         if statuses & {SKIPPED, FAILED}:  # only where there's something to override
             label = "Retry download" if statuses & {SKIPPED, FAILED} == {FAILED} else "Download anyway"
             m.addAction(label, self._retry).setToolTip("Download even though it was skipped or failed")
