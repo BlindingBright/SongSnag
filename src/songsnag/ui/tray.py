@@ -139,6 +139,7 @@ class Tray(QObject):
         self.recent_menu = m.addMenu("Recently saved")
         m.addAction("Library…", self.show_library)
         m.addAction("Fill in missing album info", lambda: self.fill_albums(None))
+        m.addAction("Merge duplicate artist folders…", self.tidy_folders)
         m.addSeparator()
         m.addAction("Get an album or artist…", self.get_music)
         m.addAction("Discover new music…", self.show_discover)
@@ -352,6 +353,26 @@ class Tray(QObject):
             except OSError:
                 pass
         self.event.emit("notice", f"Moved {moved} songs to {new}")
+
+    def tidy_folders(self) -> None:
+        from .. import tidy
+
+        plan = tidy.split_artists(self.settings.music_path)
+        if not plan:
+            QMessageBox.information(None, APP_NAME, "Every artist already has just one folder.")
+            return
+        lines = "\n".join(f"• {', '.join(o.name for o in others)}  →  {keep.name}" for keep, others in plan[:15])
+        more = f"\n…and {len(plan) - 15} more" if len(plan) > 15 else ""
+        if QMessageBox.question(None, f"{APP_NAME}: merge artist folders?",
+                                f"These artists are filed under more than one name:\n\n{lines}{more}\n\n"
+                                "Move their songs into one folder each?") != QMessageBox.StandardButton.Yes:
+            return
+
+        def run():
+            n = tidy.merge(self.catalog, plan)
+            self.event.emit("notice", f"Merged {len(plan)} artists ({n} files moved).")
+
+        threading.Thread(target=run, name="tidy", daemon=True).start()
 
     def show_settings(self) -> None:
         old_dir = self.settings.music_path
