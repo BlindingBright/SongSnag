@@ -18,11 +18,10 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMenu,
     QMessageBox,
-    QProgressBar,
-    QPushButton,
     QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -90,13 +89,11 @@ class LibraryWindow(QWidget):
         self.table.customContextMenuRequested.connect(self._menu)
         self.table.doubleClicked.connect(lambda _: self._play())
 
-        retry = QPushButton("Download anyway")
-        retry.setToolTip("Download the selected songs even if they were skipped or failed")
-        retry.clicked.connect(self._retry)
-        export_m3u = QPushButton("Export playlist…")
-        export_m3u.clicked.connect(self._export_m3u)
-        export_csv = QPushButton("Export CSV…")
-        export_csv.clicked.connect(self._export_csv)
+        export = QToolButton(text="Export", popupMode=QToolButton.ToolButtonPopupMode.InstantPopup)
+        export_menu = QMenu(export)
+        export_menu.addAction("Playlist (M3U)…", self._export_m3u)
+        export_menu.addAction("Spreadsheet (CSV)…", self._export_csv)
+        export.setMenu(export_menu)
         self.format = QComboBox()
         self.format.setToolTip("File type for new downloads. Changing it offers to convert the songs you have.")
         for key in AUDIO_FORMATS_SHORT:
@@ -108,33 +105,24 @@ class LibraryWindow(QWidget):
         top = QHBoxLayout()
         top.addWidget(self.search, 1)
         top.addWidget(self.status)
-        bottom = QHBoxLayout()
-        bottom.addWidget(self.summary, 1)
-        for b in (retry, export_m3u, export_csv):
-            bottom.addWidget(b)
-        bottom.addSpacing(12)
-        bottom.addWidget(QLabel("Save songs as:"))
-        bottom.addWidget(self.format)
-        # One line while something downloads: what it is, and a busy bar. The queue itself is in the list.
+        # What the worker is on right now, next to the counts; the queue itself is in the list.
         self.now = QLabel()
         bold = QFont(self.now.font())
         bold.setBold(True)
         self.now.setFont(bold)
         self.now.setTextFormat(Qt.TextFormat.PlainText)
         self.now.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # clip, never widen
-        self.progress = QProgressBar(maximumHeight=8, textVisible=False)
-        self.progress.setFixedWidth(140)
-        self.progress.setRange(0, 0)  # busy indicator: yt-dlp doesn't report per-song progress to us
-        self.strip = QWidget()
-        strip = QHBoxLayout(self.strip)
-        strip.setContentsMargins(4, 0, 4, 0)
-        strip.addWidget(self.now, 1)
-        strip.addWidget(self.progress)
-        self.strip.hide()
+        bottom = QHBoxLayout()
+        bottom.addWidget(self.summary)
+        bottom.addSpacing(12)
+        bottom.addWidget(self.now, 1)
+        bottom.addWidget(export)
+        bottom.addSpacing(12)
+        bottom.addWidget(QLabel("Save songs as:"))
+        bottom.addWidget(self.format)
 
         lay = QVBoxLayout(self)
         lay.addLayout(top)
-        lay.addWidget(self.strip)
         lay.addWidget(self.table, 1)
         lay.addLayout(bottom)
 
@@ -179,19 +167,14 @@ class LibraryWindow(QWidget):
             self.refresh()
 
     def update_activity(self) -> None:
-        """The one-line "now downloading" strip, shown only while the worker is on a song."""
+        """ "Checking: …" / "Downloading: …" in the bottom bar while the worker is on a song, else nothing."""
         current = self.activity() if self.activity else ""
         if not current.startswith(("Downloading", "Checking")):
             working = self.catalog.upcoming(1)
-            if not working or working[0]["status"] != WORKING:
-                self.strip.hide()
-                return
-            current = f"Downloading: {self._name(working[0])}"
-        waiting = self.catalog.runnable_count()
-        text = current + (f"   ·   {waiting} waiting" if waiting else "")
-        self.now.setText(text)
-        self.now.setToolTip(text)
-        self.strip.show()
+            current = (f"Downloading: {self._name(working[0])}"
+                       if working and working[0]["status"] == WORKING else "")
+        self.now.setText(current)
+        self.now.setToolTip(current)
 
     @staticmethod
     def _name(r) -> str:
@@ -294,7 +277,10 @@ class LibraryWindow(QWidget):
             m.addAction(f"Get everything by {artist}", lambda: self.on_get(f"artist:{artist}"))
             m.addAction(f"Follow {artist} (new releases only)", lambda: self.on_get(f"follow:{artist}", True))
         m.addSeparator()
-        m.addAction("Download anyway", self._retry)
+        statuses = {(self.catalog.get(v) or {"status": None})["status"] for v, _ in sel[:200]}
+        if statuses & {SKIPPED, FAILED}:  # only where there's something to override
+            label = "Retry download" if statuses & {SKIPPED, FAILED} == {FAILED} else "Download anyway"
+            m.addAction(label, self._retry).setToolTip("Download even though it was skipped or failed")
         m.addAction("Remove from library", self._forget)
         m.exec(self.table.viewport().mapToGlobal(pos))
 

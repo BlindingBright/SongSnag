@@ -48,7 +48,7 @@ On first start SongSnag asks where to save music and whether to grab the last 30
 | **Pause downloads** | Stop downloading (plays are still noted and downloaded when you resume). |
 | **Open / Change music folder…** | Changing the folder offers to move the songs you already have. |
 | **Recently saved** | The last 10 songs; click one to show it in your file manager. |
-| **Library…** | Search everything, play, reveal, "Download anyway", "Look up album info", export playlist/CSV, and the **Save songs as** format dropdown. Clicking the tray icon opens it too. |
+| **Library…** | Search everything, play, reveal, "Download anyway", "Look up album info", **Export** (playlist or CSV), and the **Save songs as** format dropdown. Clicking the tray icon opens it too. |
 | **Fill in missing album info** | Looks up album, year, track number and cover for saved songs that haven't been checked yet, and writes them into the files. |
 | **Merge duplicate artist folders…** | Shows artists filed under more than one spelling ("Weird Al" / 'Weird' Al / Weird Al) and, if you agree, moves their songs into one folder. |
 | **Get an album or artist…** | An artist name, an album title, or a link to an album, playlist or channel. Shows how many songs it found before downloading anything. Tick "new releases" to follow the artist. |
@@ -80,9 +80,9 @@ Where things live:
 ## Troubleshooting
 
 - **Nothing downloads.** Open the tray menu. The first line says what SongSnag is doing, and **Open log** shows the details (the download worker writes `songsnag-worker.log` next to it). Make sure ffmpeg and Node.js or Deno are installed; SongSnag warns at startup if they're missing.
-- **A song was skipped.** Open the Library, filter to *Skipped*, and see the reason in the Note column. Select it and click **Download anyway**.
+- **A song was skipped.** Open the Library, filter to *Skipped*, and see the reason in the Note column. Right-click it and choose **Download anyway**.
 - **"Couldn't read your browser's YouTube login".** On Linux, SongSnag reads the browser's cookies from your keyring (KWallet or GNOME Keyring), which may need unlocking. On recent Windows versions Chromium browsers encrypt cookies in a way yt-dlp can't read. Downloads still work without the login; only age-restricted songs and Premium bitrates need it. You can turn the option off in Settings.
-- **A song was skipped as "already saved from another upload".** You already have that song; the note names the file. Select it and click **Download anyway** if you want both.
+- **A song was skipped as "already saved from another upload".** You already have that song; the note names the file. Right-click it and choose **Download anyway** if you want both.
 - **No tray icon (GNOME).** GNOME needs the *AppIndicator and KStatusNotifierItem Support* extension. Without a tray, SongSnag opens its Library window instead.
 
 ## Building from source
