@@ -28,6 +28,23 @@ RATE_LIMITED = ("confirm you're not a bot", "confirm you’re not a bot", "http 
                 "rate limit")
 
 
+def folder_name(name: str) -> str:
+    """yt-dlp's windowsfilenames turns '"' into a full-width '＂'; an apostrophe reads better everywhere."""
+    return name.replace('"', "'").strip() or "Unknown Artist"
+
+
+def existing_folder(music: Path, artist: str) -> str:
+    """The artist folder already on disk under another spelling ("Weird Al" / 'Weird' Al / Weird Al), else artist."""
+    want = youtube.loose(artist)
+    try:
+        for d in music.iterdir():
+            if youtube.loose(d.name) == want and d.is_dir():
+                return d.name
+    except OSError:
+        pass
+    return artist
+
+
 class RateLimited(Exception):
     pass
 
@@ -221,7 +238,21 @@ class Downloader:
         tags = youtube.song_tags(info)
         if album:
             tags.album = album.album
-        info["songsnag_artist"] = tags.folder_artist
+            if album.title:  # queued from this album: its own title and credits beat the video's
+                tags.title = album.title
+                if album.credits:
+                    tags.artist = album.credits
+                # Filed under the album's artist, so one album never ends up spread over several folders.
+                tags.folder_artist = youtube.primary_artist(album.album_artist or album.credits or tags.artist)
+            if not album.title and album.artist and youtube.loose(album.artist) == youtube.loose(tags.folder_artist):
+                # YouTube Music's spelling of the artist is the canonical one; uploads vary.
+                lead = youtube.primary_artist(tags.artist)
+                tags.artist = album.artist + (tags.artist[len(lead):] if tags.artist.startswith(lead) else "")
+                tags.folder_artist = album.artist
+        folder = folder_name(tags.folder_artist)
+        if self.settings.layout == "artist":
+            folder = existing_folder(self.settings.music_path, folder)
+        info["songsnag_artist"] = folder
         info["songsnag_name"] = tags.title
         info["meta_artist"] = tags.artist
         info["meta_title"] = tags.title
@@ -256,7 +287,12 @@ class Downloader:
         fmt = (info.get("requested_formats") or [info])[0]
         path = Path(self._final_path)
         if previous and previous != path and previous.exists():
-            previous.unlink()  # replaced by the new download (e.g. .opus -> .mp3)
+            previous.unlink()  # replaced by the new download (e.g. .opus -> .mp3, or re-filed under its album)
+            if previous.parent != self.settings.music_path and previous.parent != path.parent:
+                try:
+                    previous.parent.rmdir()  # only if that left the old artist folder empty
+                except OSError:
+                    pass
         codec = path.suffix.lstrip(".")
         abr = fmt.get("abr")
         if self.settings.audio_format == "best" and fmt.get("acodec"):
@@ -272,12 +308,13 @@ class Downloader:
             "path": str(path),
             "codec": codec.split(".")[0],
             "abr": abr,
+            "track": album.track if album else None,
         })
 
     def account_history(self, limit: int) -> list[tuple[str, str]]:
         """(video_id, title) pairs from the signed-in YouTube watch history."""
         if not self.cookie_source:
-            raise RuntimeError("No Brave, Chrome or Edge profile to read your YouTube login from.")
+            raise RuntimeError("No browser profile to read your YouTube login from.")
         opts = self.base_opts(cookies=True) | {"extract_flat": "in_playlist", "playlistend": limit}
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = self._call(ydl.extract_info, "https://www.youtube.com/feed/history", download=False)

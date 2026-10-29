@@ -132,7 +132,7 @@ class SettingsDialog(QDialog):
             item.setCheckState(Qt.CheckState.Checked if not chosen or p.key in chosen else Qt.CheckState.Unchecked)
             self.profiles.addItem(item)
         if not self.profiles.count():
-            self.profiles.addItem("No Brave, Chrome or Edge profile was found on this computer")
+            self.profiles.addItem(f"No {browsers.SUPPORTED} profile was found on this computer")
             self.profiles.setEnabled(False)
 
         watching = QGroupBox("What to download")
@@ -149,9 +149,22 @@ class SettingsDialog(QDialog):
         self.autostart.setChecked(autostart_on)
         self.update = QCheckBox("Keep the YouTube downloader (yt-dlp) up to date")
         self.update.setChecked(settings.auto_update_ytdlp)
+        self.discover_auto = QSpinBox()
+        self.discover_auto.setRange(0, 50)
+        self.discover_auto.setSpecialValueText("Off")
+        self.discover_auto.setSuffix(" songs")
+        self.discover_auto.setValue(settings.discover_auto)
+        self.discover_auto.setToolTip("Each week, find music like what you play most and download the best\n"
+                                      "matches. Off: suggestions are only found when you open Discover.")
+        discover_row = QWidget()
+        dr = QHBoxLayout(discover_row)
+        dr.setContentsMargins(0, 0, 0, 0)
+        dr.addWidget(QLabel("Each week, download suggested songs:"))
+        dr.addWidget(self.discover_auto)
+        dr.addStretch(1)
         general = QGroupBox("General")
         g = QVBoxLayout(general)
-        for cb in (self.notify, self.autostart, self.update):
+        for cb in (self.notify, self.autostart, self.update, discover_row):
             g.addWidget(cb)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel)
@@ -181,6 +194,7 @@ class SettingsDialog(QDialog):
             s.login_profile = self.login.currentData()
         s.notify = self.notify.isChecked()
         s.auto_update_ytdlp = self.update.isChecked()
+        s.discover_auto = self.discover_auto.value()
         if self.profiles.isEnabled():
             items = [self.profiles.item(i) for i in range(self.profiles.count())]
             checked = [i.data(Qt.ItemDataRole.UserRole) for i in items if i.checkState() == Qt.CheckState.Checked]
@@ -193,13 +207,13 @@ class WelcomeDialog(QDialog):
         self.setWindowTitle(f"Welcome to {APP_NAME}")
         self.setWindowIcon(app_icon())
         found = browsers.find_profiles()
-        where = browsers.browsers_label(found) if found else "Brave, Chrome or Edge"
+        where = browsers.browsers_label(found) if found else browsers.SUPPORTED
 
         intro = QLabel(
             f"<h3>{APP_NAME} saves the music you play on YouTube in {where}.</h3>"
             "<p>It runs quietly in your system tray. Whenever you play a song on YouTube or YouTube Music, "
             "it downloads the best-quality audio, tags it and files it in your music folder.</p>"
-            + ("" if found else "<p><b>No Brave, Chrome or Edge browser was found on this computer.</b> You can "
+            + ("" if found else "<p><b>No supported browser was found on this computer.</b> You can "
                                 "still import a Google Takeout watch history from the tray menu.</p>"))
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.TextFormat.RichText)

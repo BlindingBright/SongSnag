@@ -93,13 +93,16 @@ def is_music(info: dict) -> bool:
 
 def primary_artist(artist: str) -> str:
     """ "A, B" / "A & B" / "A feat. B" -> "A" (yt-dlp sometimes reports several as one string)."""
-    return re.split(r",\s*|\s+&\s+|\s+feat\.?\s+", artist or "", maxsplit=1)[0].strip() or artist
+    return re.split(r",\s*|\s+&\s+|\s+(?:feat|ft)\.?\s+", artist or "", maxsplit=1, flags=re.I)[0].strip() or artist
 
 
 def _norm(text: str) -> str:
     """Compare names ignoring case, accents, spaces and punctuation."""
     decomposed = unicodedata.normalize("NFKD", text.casefold())
     return re.sub(r"[\W_]", "", "".join(c for c in decomposed if not unicodedata.combining(c)))
+
+
+loose = _norm
 
 
 def _same(a: str, b: str) -> bool:

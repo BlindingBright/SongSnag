@@ -10,7 +10,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QFileDialog, QMenu, QMessageBox, QProgressDialog, QSystemTrayIcon
 
 from .. import APP_NAME, autostart, browsers, config, paths, ytdlp_update
 from ..catalog import DONE, FAILED, QUEUED, SKIPPED, WORKING, Catalog
@@ -19,6 +19,7 @@ from ..tools import find_ffmpeg, find_js_runtimes
 from .common import app_icon, open_path, reveal, tray_icon
 from .dialogs import SettingsDialog, WelcomeDialog, pick_folder
 from .library import LibraryWindow
+from .music import ArtistSearchWindow, DiscoverWindow, FollowsDialog, GetMusicDialog, confirm_collection
 from .worker_proc import WorkerSupervisor
 
 log = logging.getLogger(__name__)
@@ -40,8 +41,16 @@ class Tray(QObject):
         self.event.connect(self._on_event)
         self.library: LibraryWindow | None = None
         self._import_running: set[str] = set()
+        self._tasks_running: set[str] = set()  # resolve / follows / discover jobs, for the icon and status
+        self._follow_wanted = False
+        self._lookup: QProgressDialog | None = None  # shown while an album/artist is being looked up
+        self.discover_window: DiscoverWindow | None = None
+        self.artist_window: ArtistSearchWindow | None = None
         self._batch_saved = 0
 
+        self._icon_state = "idle"
+        self._frame = 0
+        self._flash = QTimer(self, interval=700, timeout=self._flash_step)  # runs only while working
         self.icon = QSystemTrayIcon(tray_icon("idle"), self)
         self.icon.setToolTip(APP_NAME)
         self.menu = QMenu()
@@ -72,9 +81,13 @@ class Tray(QObject):
                                   QMessageBox.StandardButton.Ok, self.library)
                 box.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
                 box.open()  # not exec(): a nested modal loop would block quitting
-        self._update_timer = QTimer(self, interval=3600 * 1000, timeout=self._maybe_update_ytdlp)
+        self._update_timer = QTimer(self, interval=3600 * 1000, timeout=self._hourly)
         self._update_timer.start()
-        QTimer.singleShot(60 * 1000, self._maybe_update_ytdlp)
+        QTimer.singleShot(60 * 1000, self._hourly)
+
+    def _hourly(self) -> None:
+        self._maybe_update_ytdlp()
+        self._maybe_scheduled()
 
     def _welcome(self) -> None:
         dlg = WelcomeDialog(self.settings)
@@ -104,7 +117,7 @@ class Tray(QObject):
             problems.append("No JavaScript runtime (Deno or Node.js) was found. YouTube needs one; "
                             "many downloads will fail until one is installed.")
         if not browsers.find_profiles():
-            problems.append("No Brave, Chrome or Edge browser was found, so plays can't be detected automatically.")
+            problems.append(f"No {browsers.SUPPORTED} browser was found, so plays can't be detected automatically.")
         for p in problems:
             log.warning(p)
         if problems:
@@ -128,6 +141,12 @@ class Tray(QObject):
         self.recent_menu = m.addMenu("Recently saved")
         m.addAction("Library…", self.show_library)
         m.addAction("Fill in missing album info", lambda: self.fill_albums(None))
+        m.addAction("Merge duplicate artist folders…", self.tidy_folders)
+        m.addSeparator()
+        m.addAction("Find an artist…", lambda: self.find_artist(""))
+        m.addAction("Get an album or artist…", self.get_music)
+        m.addAction("Discover new music…", self.show_discover)
+        m.addAction("Followed artists…", self.show_follows)
         m.addSeparator()
 
         imp = m.addMenu("Download from history")
@@ -172,15 +191,39 @@ class Tray(QObject):
             return self.worker.current
         if self._import_running:
             return "Reading history…"
+        if self._tasks_running:
+            return {"resolve": "Looking it up on YouTube Music…", "discover": "Finding suggestions…",
+                    "search": "Searching YouTube Music…",
+                    "follows": "Checking followed artists…"}[sorted(self._tasks_running)[0]]
         if not self.settings.watch_enabled:
             return "Not watching your browser"
         where = browsers.browsers_label(self.engine.profiles())
         return f"Listening to {where}" if where else "No browser found"
 
     def _set_icon(self) -> None:
-        state = "paused" if self.settings.paused else "busy" if self.worker.current else "idle"
-        self.icon.setIcon(tray_icon(state))
-        self.icon.setToolTip(f"{APP_NAME}: {self._status_text()}")
+        """The plain logo while idle, grey while paused, and a gentle flash only while something is happening.
+
+        The icon is only touched when the state changes: tray hosts redraw (and some visibly blink) on every
+        setIcon, and an idle tray shouldn't wake up at all.
+        """
+        working = not self.settings.paused and bool(self.worker.current or self._import_running
+                                                    or self._tasks_running)
+        state = "paused" if self.settings.paused else "busy" if working else "idle"
+        if state != self._icon_state:
+            self._icon_state = state
+            self._frame = 0
+            self.icon.setIcon(tray_icon(state))
+            if working:
+                self._flash.start()
+            else:
+                self._flash.stop()
+        tip = self._status_text()
+        if tip != self.icon.toolTip():
+            self.icon.setToolTip(tip)
+
+    def _flash_step(self) -> None:
+        self._frame ^= 1
+        self.icon.setIcon(tray_icon("busy2" if self._frame else "busy"))
 
     def _on_activated(self, reason) -> None:
         if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
@@ -192,8 +235,10 @@ class Tray(QObject):
             self.worker.kick()
         elif kind in ("busy", "idle"):
             self._set_icon()
+            if self.library and self.library.isVisible():
+                self.library.update_activity()
             if kind == "idle" and self._batch_saved and not self._import_running:
-                self._notify("History import finished", f"Saved {self._batch_saved} songs.")
+                self._notify("Downloads finished", f"Saved {self._batch_saved} songs in the background.")
                 self._batch_saved = 0
         elif kind == "downloaded":
             if payload["live"]:
@@ -206,7 +251,7 @@ class Tray(QObject):
                          else "Every song has already been checked.")
         elif kind == "albums_progress":
             done, total, found = payload
-            self.icon.setToolTip(f"{APP_NAME}: album info {done}/{total} ({found} found)")
+            self.icon.setToolTip(f"Album info {done}/{total} ({found} found)")
         elif kind == "albums_done":
             done, found = payload
             if done:
@@ -220,11 +265,47 @@ class Tray(QObject):
         elif kind == "import_done":
             name, n = payload
             self._import_running.discard(name)
+            self._set_icon()
             self._notify(f"{name}", f"Found {n} new videos to check." if n else "No new videos found.")
             self.worker.kick()
+        elif kind == "artists_found":
+            self._task_done("search")
+            if self.artist_window:
+                self.artist_window.show_results(*payload)
+        elif kind == "resolve_progress":
+            self._lookup_progress(*payload)
+        elif kind == "resolved":
+            self._task_done("resolve")
+            self._close_lookup()
+            self._on_resolved(payload)
+        elif kind == "follows_done":
+            self._task_done("follows")
+            added, who = payload
+            if added:
+                names = ", ".join(who[:3]) + (f" and {len(who) - 3} more" if len(who) > 3 else "")
+                self._notify("New releases", f"Downloading {added} new songs by {names}.")
+        elif kind == "discover_done":
+            self._task_done("discover")
+            found, auto = payload
+            if auto:
+                self._notify("Discover", f"Downloading {auto} suggested songs. See Discover new music… for more.")
+            elif self.discover_window is None or not self.discover_window.isVisible():
+                self._notify("Discover", f"Found {found} songs you might like." if found
+                             else "Nothing new to suggest right now.")
+        elif kind == "task_failed":
+            name, err = payload
+            self._task_done(name)
+            if name == "search" and self.artist_window:
+                self.artist_window.search_failed(err)
+            elif name == "resolve":
+                self._close_lookup()
+                QMessageBox.warning(None, APP_NAME, f"Couldn't get that:\n\n{err}")
+            else:
+                self._notify(APP_NAME, err, warn=True)
         elif kind == "import_failed":
             name, err = payload
             self._import_running.discard(name)
+            self._set_icon()
             QMessageBox.warning(None, f"{APP_NAME}: {name}", f"The import didn't work:\n\n{err}")
 
     def _notify(self, title: str, body: str, warn: bool = False) -> None:
@@ -288,6 +369,29 @@ class Tray(QObject):
                 pass
         self.event.emit("notice", f"Moved {moved} songs to {new}")
 
+    def tidy_folders(self) -> None:
+        from .. import tidy
+
+        plan = tidy.split_artists(self.settings.music_path)
+        if not plan:
+            QMessageBox.information(None, APP_NAME, "Every artist already has just one folder.")
+            return
+        lines = "\n".join(f"• {', '.join(o.name for o in others)}  →  {keep.name}" for keep, others in plan[:15])
+        more = f"\n…and {len(plan) - 15} more" if len(plan) > 15 else ""
+        foreign = tidy.untracked(self.catalog, plan)
+        if foreign:
+            more += (f"\n\n{foreign} files in those folders weren't saved by {APP_NAME}; they stay where they are.")
+        if QMessageBox.question(None, f"{APP_NAME}: merge artist folders?",
+                                f"These artists are filed under more than one name:\n\n{lines}{more}\n\n"
+                                "Move their songs into one folder each?") != QMessageBox.StandardButton.Yes:
+            return
+
+        def run():
+            n = tidy.merge(self.catalog, plan)
+            self.event.emit("notice", f"Merged {len(plan)} artists ({n} files moved).")
+
+        threading.Thread(target=run, name="tidy", daemon=True).start()
+
     def show_settings(self) -> None:
         old_dir = self.settings.music_path
         old_format = self.settings.audio_format
@@ -337,7 +441,8 @@ class Tray(QObject):
     def show_library(self) -> None:
         if self.library is None:
             self.library = LibraryWindow(self.catalog, self.settings, self.worker.kick, self.set_format,
-                                         self.fill_albums)
+                                         self.fill_albums, self.get_music, activity=self._status_text,
+                                         on_find=self.find_artist)
         self.library.show()
         self.library.raise_()
         self.library.activateWindow()
@@ -358,6 +463,7 @@ class Tray(QObject):
             name = "YouTube account history"
             if name not in self._import_running:
                 self._import_running.add(name)
+                self._set_icon()
                 self._notify(APP_NAME, f"Reading {name}… Music found there will download in the background.")
                 self.worker.import_account(1000)
 
@@ -367,6 +473,142 @@ class Tray(QObject):
             "Watch history (watch-history.json watch-history.html *.json *.html)")
         if path:
             self._import("Takeout history", lambda: self.engine.import_takeout(Path(path)))
+
+    # ---- albums, artists, suggestions -------------------------------------
+    def _task(self, name: str, args: list[str]) -> bool:
+        if not self.worker.task(name, args):
+            return False
+        self._tasks_running.add(name)
+        self._set_icon()
+        if name == "discover" and self.discover_window:
+            self.discover_window.set_busy(True)
+        return True
+
+    def _task_done(self, name: str) -> None:
+        self._tasks_running.discard(name)
+        self._set_icon()
+        if name == "discover" and self.discover_window:
+            self.discover_window.set_busy(False)
+
+    def get_music(self, spec: str | None = None, follow: bool = False) -> None:
+        """An album/artist/playlist: look it up in a worker, then confirm (see _on_resolved)."""
+        if spec is None:
+            dlg = GetMusicDialog()
+            if not dlg.exec() or not dlg.text.text().strip():
+                return
+            spec, follow = dlg.spec(), dlg.follow.isChecked() and dlg.kind() == "artist"
+        self._follow_wanted = follow
+        if not self._task("resolve", ["--resolve", spec]):
+            self._notify(APP_NAME, "Still looking up the last one; try again in a moment.")
+            return
+        self._show_lookup(spec)
+
+    def find_artist(self, text: str = "") -> None:
+        """Search YouTube Music for an artist (in the library or not), then download or follow them."""
+        if self.artist_window is None:
+            self.artist_window = ArtistSearchWindow(self._search_artists, self._artist_picked)
+        self.artist_window.open_with(text)
+
+    def _search_artists(self, name: str) -> None:
+        self.worker.cancel("search")  # a newer search replaces one still running
+        self._task_done("search")
+        self._task("search", ["--search-artists", name])
+
+    def _artist_picked(self, artist_id: str, name: str, follow_only: bool) -> None:
+        if follow_only:
+            self.get_music(f"follow:{artist_id}", True)
+        else:
+            self.get_music(f"artistid:{artist_id}", False)
+
+    def _show_lookup(self, spec: str) -> None:
+        """A small window that opens at once, so a long artist lookup never looks like a freeze."""
+        kind, _, rest = spec.partition(":")
+        what = rest.replace("\t", " – ").strip() if kind in ("artist", "album") else "that link"
+        if kind in ("artistid", "follow"):
+            what = "the artist"
+        dlg = QProgressDialog(f"Looking up {what} on YouTube Music…", "Cancel", 0, 0)
+        dlg.setWindowTitle(f"{APP_NAME}: looking up")
+        dlg.setWindowIcon(app_icon())
+        dlg.setMinimumDuration(0)
+        dlg.setMinimumWidth(420)
+        dlg.setAutoReset(False)
+        dlg.setAutoClose(False)
+        dlg.canceled.connect(self._cancel_lookup)
+        dlg.show()
+        self._lookup = dlg
+
+    def _lookup_progress(self, done: int, total: int, label: str) -> None:
+        dlg = self._lookup
+        if not dlg:
+            return
+        if total:
+            dlg.setRange(0, total)
+            dlg.setValue(done)
+            dlg.setLabelText(f"Reading album {done} of {total}" + (f": {label}" if label else "…"))
+        elif label:
+            dlg.setLabelText(label)
+
+    def _close_lookup(self) -> None:
+        if self._lookup:
+            self._lookup.canceled.disconnect(self._cancel_lookup)
+            self._lookup.close()
+            self._lookup.deleteLater()
+            self._lookup = None
+
+    def _cancel_lookup(self) -> None:
+        self.worker.cancel("resolve")
+        self._task_done("resolve")
+        self._close_lookup()
+
+    def _on_resolved(self, c: dict) -> None:
+        from ..worker import queue_tracks
+
+        queue, follow = confirm_collection(None, c, self._follow_wanted)
+        if follow and c.get("artist_id"):
+            self.catalog.follow(c["artist_id"], c["name"], c.get("releases") or [])
+            if not queue:
+                self._notify("Following", f"New releases by {c['name']} will download automatically.")
+        if queue:
+            n = queue_tracks(self.catalog, c["tracks"], c["kind"])
+            self._notify(c["name"], f"Queued {n} songs." if n else "You already have all of these.")
+            self.worker.kick()
+
+    def show_discover(self) -> None:
+        if self.discover_window is None:
+            self.discover_window = DiscoverWindow(self.catalog, self.discover, self.worker.kick)
+        w = self.discover_window
+        w.show()
+        w.raise_()
+        w.activateWindow()
+        last = float(self.catalog.get_state("discovered_at", "0") or 0)
+        if not w.busy and last and time.time() - last > 7 * 86400:
+            self.discover()  # stale: refresh while the old list is on screen
+
+    def discover(self) -> None:
+        if not self.catalog.listening():
+            QMessageBox.information(None, APP_NAME, "Play some music first: suggestions are based on the songs "
+                                                    "you've listened to.")
+            return
+        self._task("discover", ["--discover"])
+
+    def show_follows(self) -> None:
+        FollowsDialog(self.catalog, self.check_follows).exec()
+
+    def check_follows(self) -> None:
+        if self.catalog.follows():
+            self.catalog.set_state("follows_checked", str(time.time()))
+            self._task("follows", ["--check-follows"])
+
+    def _maybe_scheduled(self) -> None:
+        """Hourly: daily followed-artist check, weekly suggestions when auto-download is on."""
+        now = time.time()
+        if self.settings.paused:
+            return
+        if self.catalog.follows() and now - float(self.catalog.get_state("follows_checked", "0") or 0) > 86400:
+            self.check_follows()
+        last = float(self.catalog.get_state("discovered_at", "0") or 0)
+        if self.settings.discover_auto and now - last > 7 * 86400 and self.catalog.listening():
+            self._task("discover", ["--discover"])
 
     def _retry_failed(self) -> None:
         n = self.catalog.retry_failed()

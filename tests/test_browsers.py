@@ -79,3 +79,63 @@ def test_all_three_browsers_found(tmp_path, monkeypatch):
     assert browsers.login_profile("", ["Edge-Flatpak/Default"]).key == "Edge-Flatpak/Default"
     assert browsers.login_profile("gone/Default", []).key == "Brave-Browser/Default"
     assert [p.key for p in browsers.selected_profiles(["Chrome/Default"])] == ["Chrome/Default"]
+
+
+def make_places(path, visits):
+    """A minimal Firefox places.sqlite with (url, title, unix_time) visits, in WAL mode like the real one."""
+    import sqlite3
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    con.execute("PRAGMA journal_mode=WAL")
+    con.executescript("""
+        CREATE TABLE moz_places (id INTEGER PRIMARY KEY, url TEXT, title TEXT);
+        CREATE TABLE moz_historyvisits (id INTEGER PRIMARY KEY, place_id INTEGER, visit_date INTEGER);
+    """)
+    for url, title, t in visits:
+        pid = con.execute("INSERT INTO moz_places(url, title) VALUES(?, ?)", (url, title)).lastrowid
+        con.execute("INSERT INTO moz_historyvisits(place_id, visit_date) VALUES(?, ?)", (pid, int(t * 1_000_000)))
+    con.commit()
+    return con  # kept open, so the newest rows only exist in the -wal file
+
+
+def test_firefox_profiles_and_visits(tmp_path):
+    root = tmp_path / "firefox"
+    con = make_places(root / "abcd.default-release" / "places.sqlite", [
+        ("https://www.youtube.com/watch?v=aaaaaaaaaaa", "Song A - YouTube", NOW - 100),
+        ("https://example.com/", "Other", NOW - 90),
+    ])
+    (root / "profiles.ini").write_text("[General]\nStartWithLastProfile=1\n\n"
+                                       "[Profile0]\nName=default-release\nIsRelative=1\nPath=abcd.default-release\n\n"
+                                       "[Profile1]\nName=gone\nIsRelative=1\nPath=missing\n")
+    found = browsers.find_profiles([browsers.Root("firefox", "Firefox", root)])
+    assert [(p.key, p.name, p.app) for p in found] == [("Firefox/abcd.default-release", "default-release", "Firefox")]
+    p = found[0]
+    assert p.history.name == "places.sqlite" and p.cookie_source == ("firefox", str(p.path))
+    visits, newest = browsers.read_visits(p.history)
+    assert [(v.video_id, v.title) for v in visits] == [("aaaaaaaaaaa", "Song A")] and newest == 2
+    assert abs(visits[0].time - (NOW - 100)) < 1  # Unix microseconds, not Chromium's 1601 epoch
+
+    before = browsers.history_stamp(p.history)
+    con.execute("INSERT INTO moz_places(url, title) VALUES('https://youtu.be/bbbbbbbbbbb', 'B')")
+    con.execute("INSERT INTO moz_historyvisits(place_id, visit_date) VALUES(3, ?)", (int(NOW * 1_000_000),))
+    con.commit()
+    assert browsers.history_stamp(p.history) != before  # the change lands in places.sqlite-wal
+    visits, newest = browsers.read_visits(p.history, after_id=2)
+    assert [v.video_id for v in visits] == ["bbbbbbbbbbb"] and newest == 3
+    con.close()
+
+
+def test_more_chromium_browsers(tmp_path, monkeypatch):
+    monkeypatch.setattr(browsers.sys, "platform", "linux")
+    monkeypatch.setattr(browsers.Path, "home", classmethod(lambda cls: tmp_path))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / ".config"))
+    cfg = tmp_path / ".config"
+    make_history(cfg / "vivaldi/Default/History", [])
+    make_history(cfg / "chromium/Default/History", [])
+    make_history(cfg / "opera/History", [])  # Opera: the top folder is the profile
+    found = browsers.find_profiles()
+    assert [(p.key, p.browser, p.name) for p in found] == [
+        ("Vivaldi/Default", "vivaldi", "Default"), ("Chromium/Default", "chromium", "Default"),
+        ("Opera", "opera", "Opera")]
+    assert found[2].cookie_source == ("opera", str(cfg / "opera"))

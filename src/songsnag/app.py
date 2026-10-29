@@ -27,9 +27,42 @@ def setup_logging(debug: bool, name: str = APP_ID) -> Path:
     return logfile
 
 
+def _wake_python_on_signals(app):
+    """Python runs signal handlers only when it gets control back from Qt's event loop.
+
+    On Linux and macOS the signal itself wakes the loop through a socket, so an idle tray never wakes up.
+    Windows has no such hook for GUI apps, so a slow timer gives Python a turn instead.
+    """
+    from PySide6.QtCore import QTimer
+
+    if sys.platform == "win32":
+        heartbeat = QTimer(app, interval=500)
+        heartbeat.timeout.connect(lambda: None)
+        heartbeat.start()
+        return heartbeat
+    import socket
+
+    from PySide6.QtCore import QSocketNotifier
+
+    rsock, wsock = socket.socketpair()
+    for s in (rsock, wsock):
+        s.setblocking(False)
+    signal.set_wakeup_fd(wsock.fileno())
+    notifier = QSocketNotifier(rsock.fileno(), QSocketNotifier.Type.Read, app)
+
+    def drain(*_):
+        try:
+            rsock.recv(64)
+        except OSError:
+            pass
+
+    notifier.activated.connect(drain)  # returning to Python here is what runs the handler
+    return rsock, wsock, notifier
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog=APP_ID,
-                                 description="Save the music you play on YouTube in Brave, Chrome or Edge.")
+                                 description="Save the music you play on YouTube in your web browser.")
     ap.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     ap.add_argument("--debug", action="store_true", help="verbose logging to the terminal")
     ap.add_argument("--library", action="store_true", help="open the library window on start")
@@ -38,6 +71,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--import-account", type=int, metavar="N", help=argparse.SUPPRESS)
     ap.add_argument("--fill-albums", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--ids", help=argparse.SUPPRESS)
+    ap.add_argument("--resolve", metavar="SPEC", help=argparse.SUPPRESS)
+    ap.add_argument("--check-follows", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--search-artists", metavar="NAME", help=argparse.SUPPRESS)
+    ap.add_argument("--discover", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
 
     if args.worker:
@@ -49,7 +86,6 @@ def main(argv: list[str] | None = None) -> int:
 
     logfile = setup_logging(args.debug)
 
-    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     from .ui.common import InstanceGuard
@@ -76,9 +112,7 @@ def main(argv: list[str] | None = None) -> int:
 
     signal.signal(signal.SIGINT, on_signal)
     signal.signal(signal.SIGTERM, on_signal)
-    heartbeat = QTimer(interval=500)  # lets the Python interpreter run signal handlers
-    heartbeat.timeout.connect(lambda: None)
-    heartbeat.start()
+    keepalive = _wake_python_on_signals(app)  # noqa: F841 - must outlive the event loop
 
     tray = Tray(app, logfile)
     guard.activated.connect(tray.show_library)
