@@ -234,7 +234,7 @@ class Tray(QObject):
             if self.library and self.library.isVisible():
                 self.library.update_activity()
             if kind == "idle" and self._batch_saved and not self._import_running:
-                self._notify("History import finished", f"Saved {self._batch_saved} songs.")
+                self._notify("Downloads finished", f"Saved {self._batch_saved} songs in the background.")
                 self._batch_saved = 0
         elif kind == "downloaded":
             if payload["live"]:
