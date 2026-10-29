@@ -180,3 +180,14 @@ def test_follows(tmp_path):
     assert f["name"] == "Band" and json.loads(f["seen"]) == ["MPREb_1", "MPREb_2"]
     c.unfollow(["UCartist"])
     assert c.follows() == []
+
+
+def test_song_key_ignores_notes_but_not_versions():
+    from songsnag.albums import song_key
+
+    plain = song_key('"Weird Al" Yankovic', "White & Nerdy")
+    assert song_key("Weird Al Yankovic", 'White & Nerdy (Parody of "Ridin\'" by X feat. Y) (feat. Y)') == plain
+    assert song_key("A", "Song [Official Video]") == song_key("A", "Song")
+    assert song_key("A", "Song (Live at Wembley)") != song_key("A", "Song")
+    assert song_key("A", "Song (Tape B Remix)") != song_key("A", "Song")
+    assert song_key("A", "(I Can't Get No) Satisfaction") == "a|satisfaction"

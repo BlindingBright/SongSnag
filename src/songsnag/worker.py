@@ -20,7 +20,7 @@ from dataclasses import asdict
 from pathlib import Path
 
 from . import albums, browsers, config, paths, tagging, youtube
-from .catalog import PRIORITY_BACKFILL, PRIORITY_LIVE, Catalog
+from .catalog import PRIORITY_BACKFILL, PRIORITY_COLLECTION, PRIORITY_LIVE, Catalog
 
 log = logging.getLogger(__name__)
 
@@ -250,6 +250,79 @@ def import_account(events_path: Path | None, limit: int) -> int:
         catalog.close()
 
 
+def _one_shot(events_path: Path | None, fn) -> int:
+    """Run fn(emit, catalog, settings) once, turning failures into a "task_failed" event."""
+    emit = Events(events_path)
+    catalog = Catalog(paths.data_dir() / "catalog.db")
+    try:
+        fn(emit, catalog, config.load())
+        return 0
+    except albums.Unavailable as e:
+        emit("task_failed", f"YouTube Music isn't reachable right now ({e}). Try again later.")
+    except Exception as e:
+        from .collect import NotFound
+
+        if not isinstance(e, NotFound):
+            log.exception("task failed")
+        emit("task_failed", str(e))
+    finally:
+        emit.close()
+        catalog.close()
+    return 1
+
+
+def resolve(spec: str):
+    def run(emit, catalog: Catalog, settings) -> None:
+        from . import collect
+
+        emit("resolved", collect.resolve(spec).to_json())
+
+    return run
+
+
+def check_follows(emit, catalog: Catalog, settings) -> None:
+    """Queue the songs on releases followed artists put out since the last check."""
+    from . import collect
+
+    added, who = 0, []
+    for i, f in enumerate(catalog.follows()):
+        if i:
+            time.sleep(1)
+        try:
+            releases, tracks = collect.new_releases(f["artist_id"], set(json.loads(f["seen"] or "[]")))
+        except collect.NotFound:
+            log.info("followed artist %s (%s) not found any more", f["name"], f["artist_id"])
+            continue
+        n = queue_tracks(catalog, tracks, "followed")
+        catalog.followed_checked(f["artist_id"], releases)
+        if n:
+            added += n
+            who.append(f["name"])
+    emit("follows_done", [added, who])
+
+
+def discover(emit, catalog: Catalog, settings) -> None:
+    from . import discover as disc
+
+    found = disc.suggest(catalog)
+    catalog.replace_suggestions(found)
+    catalog.set_state("discovered_at", str(time.time()))
+    auto = [r["video_id"] for r in catalog.suggestions()[: settings.discover_auto]] if settings.discover_auto else []
+    if auto:
+        catalog.answer_suggestions(auto, "queued")
+    emit("discover_done", [len(found), len(auto)])
+
+
+def queue_tracks(catalog: Catalog, tracks: list[dict], source: str) -> int:
+    """Queue songs the user asked for (an album, an artist, new releases). Returns how many are new.
+
+    Songs already saved from another upload are left out here, so they don't each cost a YouTube probe.
+    """
+    tracks = [t for t in tracks if not catalog.saved_copy(albums.song_key(t["artist"], t["title"]), t["video_id"])]
+    return sum(catalog.add_sighting(t["video_id"], source=source, title=f"{t['artist']} - {t['title']}",
+                                    priority=PRIORITY_COLLECTION, music_hint=True, played=False) for t in tracks)
+
+
 def main(args) -> int:
     # SIGTERM from the tray (pause/quit) should unwind through the finally blocks.
     signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
@@ -258,4 +331,10 @@ def main(args) -> int:
         return import_account(events, args.import_account)
     if args.fill_albums:
         return fill_albums(events, args.ids.split(",") if args.ids else None)
+    if args.resolve:
+        return _one_shot(events, resolve(args.resolve))
+    if args.check_follows:
+        return _one_shot(events, check_follows)
+    if args.discover:
+        return _one_shot(events, discover)
     return run(events)

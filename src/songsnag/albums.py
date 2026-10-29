@@ -57,9 +57,19 @@ def norm(text: str) -> str:
     return re.sub(r"[\W_]+", "", t)
 
 
+# Bracketed notes that make it a different recording; anything else in brackets ("(Parody of …)",
+# "(feat. …)", "[Official Video]", "(2011 Remaster)") is the same song.
+_DIFFERENT = re.compile(r"\b(live|remix|mix|rmx|acoustic|instrumental|demo|cover|karaoke|reprise|unplugged|"
+                        r"sped|slowed|session|orchestral|piano|a cappella|acapella|extended|dub|vip|bootleg)\b", re.I)
+_BRACKETED = re.compile(r"\s*(\([^()]*(?:\([^()]*\)[^()]*)*\)|\[[^\[\]]*\])")
+KEY_VERSION = "2"  # bump when song_key changes, so saved songs get re-keyed
+
+
 def song_key(artist: str, title: str) -> str:
     """Identifies a song across uploads: the official video, the Topic track and a lyric video share it."""
-    return f"{norm(primary_artist(artist or ''))}|{norm(title or '')}"
+    core = _BRACKETED.sub(lambda m: m.group(0) if _DIFFERENT.search(m.group(0)) else "", title or "")
+    core = re.split(r"\s+(?:feat\.?|ft\.?|featuring)\s+", core, maxsplit=1, flags=re.I)[0]
+    return f"{norm(primary_artist(artist or ''))}|{norm(core) or norm(title or '')}"
 
 
 def duration_ok(ours: float | None, theirs: float | None, strict: bool = False) -> bool:

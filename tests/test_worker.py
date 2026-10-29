@@ -134,3 +134,51 @@ def test_same_song_from_another_upload_is_skipped(cat, tmp_path):
 
     cat.requeue(["second00001"], force=True)  # "Download anyway" (and format conversions) still download
     assert run_one(cat, "second00001", FakeDownloader({"second00001": "Music"}))[-1] == "downloaded"
+
+
+def test_one_shot_tasks(cat, monkeypatch, tmp_path):
+    from songsnag import collect, discover
+
+    def fake_resolve(spec):
+        if spec == "artist:nobody":
+            raise collect.NotFound("No artist called nobody")
+        return collect.Collection("album", "LP by Band", [{"video_id": "lp_track_01", "title": "One",
+                                                           "artist": "Band", "album": "LP"}])
+
+    monkeypatch.setattr(collect, "resolve", fake_resolve)
+    events = tmp_path / "e.jsonl"
+    assert worker._one_shot(events, worker.resolve("album:Band\tLP")) == 0
+    assert worker._one_shot(events, worker.resolve("artist:nobody")) == 1
+    lines = [json.loads(line) for line in events.read_text().splitlines()]
+    assert lines[0]["kind"] == "resolved" and lines[0]["payload"]["tracks"][0]["video_id"] == "lp_track_01"
+    assert lines[1] == {"kind": "task_failed", "payload": "No artist called nobody"}
+
+    assert worker.queue_tracks(cat, lines[0]["payload"]["tracks"], "album") == 1
+    r = cat.get("lp_track_01")
+    assert r["priority"] == 5 and r["plays"] == 0 and r["music_hint"] == 1 and r["source"] == "album"
+
+    monkeypatch.setattr(discover, "suggest", lambda c: [{"video_id": "sugg0000001", "artist": "X", "title": "Y"}])
+    s = config.load()
+    s.discover_auto = 1
+    config.save(s)
+    assert worker._one_shot(events, worker.discover) == 0
+    assert cat.get("sugg0000001")["status"] == QUEUED and cat.get_state("discovered_at")
+
+    cat.follow("UCband", "Band", ["MPREb_old"])
+    monkeypatch.setattr(collect, "new_releases", lambda cid, seen: (
+        ["MPREb_old", "MPREb_new"], [{"video_id": "new_track01", "title": "New", "artist": "Band"}]))
+    assert worker._one_shot(events, worker.check_follows) == 0
+    assert cat.get("new_track01")["source"] == "followed"
+    assert json.loads(cat.follows()[0]["seen"]) == ["MPREb_new", "MPREb_old"]
+    assert json.loads(events.read_text().splitlines()[-1])["payload"] == [1, ["Band"]]
+
+
+def test_queue_tracks_leaves_out_songs_already_saved(cat, tmp_path):
+    saved = tmp_path / "Two.mp3"
+    saved.write_bytes(b"x")
+    cat.add_sighting("video000002", source="brave")
+    cat.next_job()
+    cat.finish_done("video000002", {"artist": "Band", "title": "Two", "path": str(saved)})
+    tracks = [{"video_id": "topic000001", "title": "One", "artist": "Band"},
+              {"video_id": "topic000002", "title": "Two (feat. Guest)", "artist": "Band"}]
+    assert worker.queue_tracks(cat, tracks, "album") == 1 and cat.get("topic000002") is None

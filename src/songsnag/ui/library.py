@@ -41,13 +41,15 @@ SOURCES = {
 
 
 class LibraryWindow(QWidget):
-    def __init__(self, catalog: Catalog, settings: Settings, on_change, on_format, on_albums, parent=None):
+    def __init__(self, catalog: Catalog, settings: Settings, on_change, on_format, on_albums, on_get=None,
+                 parent=None):
         super().__init__(parent)
         self.catalog = catalog
         self.settings = settings
         self.on_change = on_change  # called after retry/forget so the worker wakes up
         self.on_format = on_format  # called with the new audio format key
         self.on_albums = on_albums  # called with video ids to look up album info for
+        self.on_get = on_get  # called with a resolve spec (whole album / artist), and whether to follow
         self.setWindowTitle(f"{APP_NAME} Library")
         self.setWindowIcon(app_icon())
 
@@ -194,6 +196,15 @@ class LibraryWindow(QWidget):
         m.addAction("Show in folder", self._reveal).setEnabled(has_file)
         m.addAction("Open on YouTube", self._open_youtube)
         m.addAction("Look up album info", self._albums).setEnabled(has_file)
+        row = self.catalog.get(sel[0][0]) if len(sel) == 1 and self.on_get else None
+        if row and row["artist"]:
+            artist = youtube.primary_artist(row["artist"])
+            m.addSeparator()
+            if row["album"]:
+                m.addAction(f"Get the whole album “{row['album']}”",
+                            lambda: self.on_get(f"album:{artist}\t{row['album']}"))
+            m.addAction(f"Get everything by {artist}", lambda: self.on_get(f"artist:{artist}"))
+            m.addAction(f"Follow {artist} (new releases only)", lambda: self.on_get(f"follow:{artist}", True))
         m.addSeparator()
         m.addAction("Download anyway", self._retry)
         m.addAction("Remove from library", self._forget)

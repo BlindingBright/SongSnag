@@ -12,7 +12,7 @@ import threading
 import time
 from pathlib import Path
 
-from .albums import song_key
+from .albums import KEY_VERSION, song_key
 
 QUEUED, WORKING, DONE, SKIPPED, FAILED = "queued", "working", "done", "skipped", "failed"
 STATUSES = (QUEUED, WORKING, DONE, SKIPPED, FAILED)
@@ -83,12 +83,17 @@ class Catalog:
             columns = {r[1] for r in self._db.execute("PRAGMA table_info(tracks)")}
             if "album_checked" not in columns:  # added in 1.1: when the album lookup last ran
                 self._db.execute("ALTER TABLE tracks ADD COLUMN album_checked REAL")
-            if "song_key" not in columns:  # added in 1.1: artist+title, to spot the same song from another upload
+            fresh = "song_key" not in columns
+            if fresh:  # added in 1.1: artist+title, to spot the same song from another upload
                 self._db.execute("ALTER TABLE tracks ADD COLUMN song_key TEXT")
-                self._db.executemany("UPDATE tracks SET song_key=? WHERE video_id=?", [
-                    (song_key(r[1], r[2]), r[0]) for r in self._db.execute(
-                        "SELECT video_id, artist, title FROM tracks WHERE status=? AND title IS NOT NULL", (DONE,))])
             self._db.execute("CREATE INDEX IF NOT EXISTS tracks_song ON tracks(song_key)")
+            keyed = self._db.execute("SELECT value FROM state WHERE key='song_key_version'").fetchone()
+            if fresh or not keyed or keyed[0] != KEY_VERSION:
+                self._db.executemany("UPDATE tracks SET song_key=? WHERE video_id=?", [
+                    (song_key(r[1] or "", r[2]), r[0]) for r in self._db.execute(
+                        "SELECT video_id, artist, title FROM tracks WHERE status=? AND title IS NOT NULL", (DONE,))])
+                self._db.execute("INSERT OR REPLACE INTO state(key, value) VALUES('song_key_version', ?)",
+                                 (KEY_VERSION,))
             if recover:
                 # Only the download worker passes this: whatever it was doing when it last stopped goes back in line.
                 self._db.execute("UPDATE tracks SET status=? WHERE status=?", (QUEUED, WORKING))

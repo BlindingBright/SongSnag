@@ -46,6 +46,7 @@ class Settings:
     autostart: bool = True
     auto_update_ytdlp: bool = True
     poll_seconds: int = 15
+    discover_auto: int = 0  # each week, download this many suggested songs (0 = only when asked)
     welcomed: bool = False
 
     @property

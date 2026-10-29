@@ -101,6 +101,7 @@ class WorkerSupervisor(QObject):
         self._worker: _Proc | None = None
         self._importer: _Proc | None = None
         self._filler: _Proc | None = None
+        self._tasks: dict[str, _Proc] = {}
         self._fail_streak = 0
         self._backoff_until = 0.0
         self._stopping = False
@@ -178,9 +179,36 @@ class WorkerSupervisor(QObject):
         self._filler.line.connect(lambda m: self.event.emit(m.get("kind"), m.get("payload")))
         return True
 
+    def task(self, name: str, args: list[str]) -> bool:
+        """Run a one-shot worker job (resolve an album, check followed artists, find suggestions).
+
+        Its events are re-emitted as they come; if it dies without a word, "task_failed" is emitted.
+        False if a job of that name is already running.
+        """
+        running = self._tasks.get(name)
+        if self._stopping or (running and running.running()):
+            return False
+        heard = []
+
+        def on_line(m: dict) -> None:
+            heard.append(m.get("kind"))
+            self.event.emit(m.get("kind"), m.get("payload"))
+
+        def on_done(code: int, _ran: float) -> None:
+            if not heard:
+                self.event.emit("task_failed", f"It stopped unexpectedly (exit {code}). "
+                                               "Details are in songsnag-worker.log.")
+            self.kick()  # whatever it queued can start downloading
+
+        proc = _Proc(name, ["--worker", *args], self)
+        proc.line.connect(on_line)
+        proc.done.connect(on_done)
+        self._tasks[name] = proc
+        return True
+
     def stop(self) -> None:
         self._stopping = True
         self._timer.stop()
-        for p in (self._worker, self._importer, self._filler):
+        for p in (self._worker, self._importer, self._filler, *self._tasks.values()):
             if p:
                 p.stop()
