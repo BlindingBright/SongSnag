@@ -84,6 +84,9 @@ class Catalog:
             columns = {r[1] for r in self._db.execute("PRAGMA table_info(tracks)")}
             if "album_checked" not in columns:  # added in 1.1: when the album lookup last ran
                 self._db.execute("ALTER TABLE tracks ADD COLUMN album_checked REAL")
+            for col, kind in (("album_id", "TEXT"), ("track", "INTEGER")):  # 1.1: the release a song was queued
+                if col not in columns:                                     # from, and its track number
+                    self._db.execute(f"ALTER TABLE tracks ADD COLUMN {col} {kind}")
             fresh = "song_key" not in columns
             if fresh:  # added in 1.1: artist+title, to spot the same song from another upload
                 self._db.execute("ALTER TABLE tracks ADD COLUMN song_key TEXT")
@@ -185,7 +188,7 @@ class Catalog:
 
     def _meta_sql(self, meta: dict) -> tuple[str, list]:
         cols = [k for k in ("title", "artist", "album", "channel", "duration", "path", "codec", "abr",
-                            "album_checked", "song_key") if k in meta]
+                            "album_checked", "song_key", "track") if k in meta]
         return "".join(f", {c}=?" for c in cols), [meta[c] for c in cols]
 
     def finish_done(self, video_id: str, meta: dict) -> None:
@@ -275,9 +278,21 @@ class Catalog:
         return self._all("SELECT * FROM tracks WHERE status=? AND album_checked IS NULL"
                          " ORDER BY downloaded_at DESC", (DONE,))
 
-    def set_album(self, video_id: str, album: str | None) -> None:
+    def set_release(self, tracks: list[dict]) -> None:
+        """Where queued songs came from (album id, track number) and what they are, so the Library can show them
+        properly before they download; the download's own tags replace these."""
+        with self._lock, self._db:
+            self._db.executemany(
+                "UPDATE tracks SET album_id=COALESCE(?, album_id), track=COALESCE(?, track),"
+                " artist=COALESCE(artist, ?), title=COALESCE(title, ?), album=COALESCE(NULLIF(album, ''), ?)"
+                " WHERE video_id=? AND status<>?",
+                [(t.get("album_id"), t.get("track"), t.get("artist") or None, t.get("title") or None,
+                  t.get("album") or None, t["video_id"], DONE) for t in tracks])
+
+    def set_album(self, video_id: str, album: str | None, track: int | None = None) -> None:
         if album:
-            self._run("UPDATE tracks SET album=?, album_checked=? WHERE video_id=?", (album, time.time(), video_id))
+            self._run("UPDATE tracks SET album=?, album_checked=?, track=COALESCE(?, track) WHERE video_id=?",
+                      (album, time.time(), track, video_id))
         else:
             self._run("UPDATE tracks SET album_checked=? WHERE video_id=?", (time.time(), video_id))
 
@@ -297,8 +312,8 @@ class Catalog:
         return len(rows)
 
     def export_m3u(self, dest: Path) -> int:
-        rows = self._all("SELECT * FROM tracks WHERE status=? AND path IS NOT NULL"
-                         " ORDER BY artist COLLATE NOCASE, title COLLATE NOCASE", (DONE,))
+        rows = self._all("SELECT * FROM tracks WHERE status=? AND path IS NOT NULL ORDER BY artist COLLATE NOCASE,"
+                         " album COLLATE NOCASE, track, title COLLATE NOCASE", (DONE,))  # albums in order
         n = 0
         with dest.open("w", encoding="utf-8") as f:
             f.write("#EXTM3U\n")

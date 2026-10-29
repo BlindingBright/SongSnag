@@ -172,12 +172,17 @@ def lookup(artist: str, title: str, duration: float | None = None, *, album_hint
     _, song, album = best
     credited = next((a.get("name", "") for a in song.get("artists") or [] if norm(a.get("name", "")) == want_artist),
                     "")
+    return _info(album, song.get("videoId"), title, artist, credited, song["album"].get("name", ""))
+
+
+def _info(album: dict, video_id: str | None, title: str, artist: str, credited: str = "",
+          fallback_name: str = "") -> AlbumInfo:
     tracks = album.get("tracks") or []
-    number = next((t.get("trackNumber") for t in tracks if t.get("videoId") == song.get("videoId")), None)
+    number = next((t.get("trackNumber") for t in tracks if video_id and t.get("videoId") == video_id), None)
     if number is None:
-        number = next((t.get("trackNumber") for t in tracks if norm(t.get("title", "")) == want_title), None)
+        number = next((t.get("trackNumber") for t in tracks if norm(t.get("title", "")) == norm(title)), None)
     return AlbumInfo(
-        album=album.get("title") or song["album"].get("name", ""),
+        album=album.get("title") or fallback_name,
         album_artist=", ".join(a.get("name", "") for a in album.get("artists") or []) or artist,
         year=str(album.get("year") or ""),
         track=number,
@@ -186,3 +191,17 @@ def lookup(artist: str, title: str, duration: float | None = None, *, album_hint
         cover_url=_cover(album),
         artist=credited,
     )
+
+
+def from_release(browse_id: str, video_id: str, title: str, artist: str) -> AlbumInfo | None:
+    """Details for a song queued from a known album (whole-album/artist downloads): no guessing which release.
+
+    Every song of the album gets the same album name and its own track number, so the album plays in order.
+    """
+    album = _album(browse_id)
+    if not album:
+        return None
+    lead = norm(primary_artist(artist))
+    credited = next((a.get("name", "") for t in album.get("tracks") or [] if t.get("videoId") == video_id
+                     for a in t.get("artists") or [] if norm(a.get("name", "")) == lead), "")
+    return _info(album, video_id, title, artist, credited)

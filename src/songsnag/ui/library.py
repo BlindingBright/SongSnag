@@ -20,6 +20,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QProgressBar,
     QPushButton,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -32,7 +33,18 @@ from ..config import AUDIO_FORMATS, AUDIO_FORMATS_SHORT, Settings
 from .common import app_icon, open_path, reveal
 
 STATUS_LABELS = {DONE: "Saved", QUEUED: "Waiting", WORKING: "Downloading…", SKIPPED: "Skipped", FAILED: "Failed"}
-COLUMNS = ("Artist", "Title", "Album", "Status", "Quality", "Plays", "Source", "Date", "Note")
+COLUMNS = ("Artist", "Title", "Album", "#", "Status", "Quality", "Plays", "Source", "Date", "Note")
+SORT_KEY = Qt.ItemDataRole.UserRole + 2
+
+
+class Item(QTableWidgetItem):
+    """A cell that sorts by its SORT_KEY when it has one (dates, track numbers), else by its text."""
+
+    def __lt__(self, other):
+        a, b = self.data(SORT_KEY), other.data(SORT_KEY)
+        if a is not None and b is not None:
+            return a < b
+        return super().__lt__(other)
 SOURCES = {
     **{b: f"Played in {app}" for b, app in browsers.APPS.items()},
     **{f"{b}-history": f"{app} history" for b, app in browsers.APPS.items()},
@@ -103,27 +115,21 @@ class LibraryWindow(QWidget):
         bottom.addSpacing(12)
         bottom.addWidget(QLabel("Save songs as:"))
         bottom.addWidget(self.format)
-        # "Now downloading" strip: only shown while there's something in the queue.
+        # One line while something downloads: what it is, and a busy bar. The queue itself is in the list.
         self.now = QLabel()
         bold = QFont(self.now.font())
         bold.setBold(True)
         self.now.setFont(bold)
-        self.progress = QProgressBar(maximumHeight=6, textVisible=False)
+        self.now.setTextFormat(Qt.TextFormat.PlainText)
+        self.now.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)  # clip, never widen
+        self.progress = QProgressBar(maximumHeight=8, textVisible=False)
+        self.progress.setFixedWidth(140)
         self.progress.setRange(0, 0)  # busy indicator: yt-dlp doesn't report per-song progress to us
-        self.next_up = QLabel(wordWrap=True)
-        self.next_up.setTextFormat(Qt.TextFormat.PlainText)
-        show_queue = QPushButton("Show queue")
-        show_queue.setToolTip("List everything still waiting")
-        show_queue.clicked.connect(lambda: self.status.setCurrentIndex(self.status.findData(QUEUED)))
-        strip_top = QHBoxLayout()
-        strip_top.addWidget(self.now, 1)
-        strip_top.addWidget(show_queue)
         self.strip = QWidget()
-        strip = QVBoxLayout(self.strip)
-        strip.setContentsMargins(4, 2, 4, 6)
-        strip.addLayout(strip_top)
+        strip = QHBoxLayout(self.strip)
+        strip.setContentsMargins(4, 0, 4, 0)
+        strip.addWidget(self.now, 1)
         strip.addWidget(self.progress)
-        strip.addWidget(self.next_up)
         self.strip.hide()
 
         lay = QVBoxLayout(self)
@@ -145,6 +151,7 @@ class LibraryWindow(QWidget):
         hl = self.palette().color(QPalette.ColorRole.Highlight)
         hl.setAlpha(60)
         self._highlight = QBrush(hl)
+        self._dim = QBrush(self.palette().color(QPalette.ColorRole.PlaceholderText))
 
     def _sync_format(self) -> None:
         self.format.setCurrentIndex(max(0, self.format.findData(self.settings.audio_format)))
@@ -172,23 +179,18 @@ class LibraryWindow(QWidget):
             self.refresh()
 
     def update_activity(self) -> None:
-        """The "now downloading" strip: the current song, what's next, and how much is waiting."""
-        queue = self.catalog.upcoming(6)
+        """The one-line "now downloading" strip, shown only while the worker is on a song."""
         current = self.activity() if self.activity else ""
-        working = [r for r in queue if r["status"] == WORKING]
-        if not queue and not (current or "").startswith(("Downloading", "Checking")):
-            self.strip.hide()
-            return
-        if not current or not current.startswith(("Downloading", "Checking")):
-            current = (f"Downloading: {self._name(working[0])}" if working
-                       else current or "Waiting to download")
-        self.now.setText(current)
-        self.progress.setVisible(bool(working) or current.startswith(("Downloading", "Checking")))
+        if not current.startswith(("Downloading", "Checking")):
+            working = self.catalog.upcoming(1)
+            if not working or working[0]["status"] != WORKING:
+                self.strip.hide()
+                return
+            current = f"Downloading: {self._name(working[0])}"
         waiting = self.catalog.runnable_count()
-        nxt = [self._name(r) for r in queue if r["status"] == QUEUED][:5]
-        more = waiting - len(nxt)
-        self.next_up.setText(("Up next: " + "  ·  ".join(nxt) + (f"  (+{more} more)" if more > 0 else ""))
-                             if nxt else "Nothing else waiting.")
+        text = current + (f"   ·   {waiting} waiting" if waiting else "")
+        self.now.setText(text)
+        self.now.setToolTip(text)
         self.strip.show()
 
     @staticmethod
@@ -201,32 +203,54 @@ class LibraryWindow(QWidget):
         self._seen = self.catalog.version()
         self.update_activity()
         rows = self.catalog.search(self.search.text().strip(), self.status.currentData())
+        # Queue position, in the order the worker takes songs (live plays first, then oldest first).
+        now = time.time()
+        ready = sorted((r for r in rows if r["status"] == QUEUED and (r["next_try"] or 0) <= now),
+                       key=lambda r: (-(r["priority"] or 0), r["first_seen"] or 0))
+        position = {r["video_id"]: i + 1 for i, r in enumerate(ready)}
+        date_col, track_col = COLUMNS.index("Date"), COLUMNS.index("#")
         self.table.setSortingEnabled(False)
         self.table.setRowCount(len(rows))
         for i, r in enumerate(rows):
             quality = ""
             if r["codec"]:
                 quality = f"{r['codec']} {round(r['abr'])} kbps" if r["abr"] else r["codec"]
-            # The song downloading now is dated now, so the default newest-first order puts it at the top.
-            stamp = time.time() if r["status"] == WORKING else r["downloaded_at"] or r["first_seen"] or 0
+            stamp = r["downloaded_at"] or r["first_seen"] or 0
+            status = STATUS_LABELS.get(r["status"], r["status"])
+            # Newest first puts the song downloading now on top, then the queue in the order it'll download.
+            order = stamp
+            if r["status"] == WORKING:
+                order = 4e12
+            elif r["video_id"] in position:
+                status, order = f"Waiting #{position[r['video_id']]}", 3e12 - position[r["video_id"]]
+            elif r["status"] == QUEUED:
+                retry = datetime.fromtimestamp(r["next_try"]).strftime("%H:%M")
+                status, order = f"Retry at {retry}", 2e12 - (r["next_try"] or 0)
             values = (
                 r["artist"] or "",
                 r["title"] or r["seen_title"] or r["video_id"],
                 r["album"] or "",
-                STATUS_LABELS.get(r["status"], r["status"]),
+                r["track"] or "",
+                status,
                 quality,
                 r["plays"],
                 SOURCES.get(r["source"], r["source"] or ""),
                 datetime.fromtimestamp(stamp).strftime("%Y-%m-%d %H:%M") if stamp else "",
                 r["note"] or "",
             )
-            working = r["status"] == WORKING
+            working, waiting = r["status"] == WORKING, r["status"] == QUEUED
             for c, v in enumerate(values):
-                item = QTableWidgetItem()
+                item = Item()
                 item.setData(Qt.ItemDataRole.DisplayRole, v)
+                if c == date_col:
+                    item.setData(SORT_KEY, order)
+                elif c == track_col:  # sorting by # keeps each album together, in track order
+                    item.setData(SORT_KEY, ((r["album"] or "").casefold(), r["track"] or 0))
                 if working:  # the song being downloaded right now stands out
                     item.setFont(self._bold)
                     item.setBackground(self._highlight)
+                elif waiting:
+                    item.setForeground(self._dim)
                 if c == 0:
                     item.setData(Qt.ItemDataRole.UserRole, r["video_id"])
                     item.setData(Qt.ItemDataRole.UserRole + 1, r["path"])
@@ -236,6 +260,7 @@ class LibraryWindow(QWidget):
             self.table.resizeColumnsToContents()
             for c in (0, 1, 2):
                 self.table.setColumnWidth(c, min(self.table.columnWidth(c), 240))
+            self.table.setColumnWidth(track_col, 36)
             self._sized = True
         n = self.catalog.counts()
         self.summary.setText(f"{n[DONE]} saved · {n[QUEUED] + n[WORKING]} waiting · "

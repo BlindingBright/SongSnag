@@ -40,20 +40,24 @@ def _yt():
     return albums._yt()
 
 
-def _track(t: dict, album_name: str = "") -> dict | None:
+def _track(t: dict, album_name: str = "", album_id: str = "") -> dict | None:
     vid = t.get("videoId")
     artists = ", ".join(a.get("name", "") for a in t.get("artists") or [] if a.get("name"))
     if not vid or not t.get("title"):
         return None
     album = t.get("album")
-    return {"video_id": vid, "title": t["title"], "artist": artists,
-            "album": album_name or (album.get("name", "") if isinstance(album, dict) else album or "")}
+    out = {"video_id": vid, "title": t["title"], "artist": artists,
+           "album": album_name or (album.get("name", "") if isinstance(album, dict) else album or "")}
+    if album_id:  # from a known release: the worker tags it with exactly this album and position
+        out["album_id"] = album_id
+        out["track"] = t.get("trackNumber")
+    return out
 
 
 def release_tracks(browse_id: str) -> tuple[dict, list[dict]]:
-    album = albums._call(_yt().get_album, browse_id) or {}
+    album = albums._album(browse_id) or {}
     name = album.get("title") or ""
-    return album, [t for t in (_track(x, name) for x in album.get("tracks") or []) if t]
+    return album, [t for t in (_track(x, name, browse_id) for x in album.get("tracks") or []) if t]
 
 
 def album(browse_id: str) -> Collection:

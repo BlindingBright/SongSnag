@@ -91,3 +91,11 @@ def test_network_errors_surface_as_unavailable(monkeypatch):
     monkeypatch.setattr(albums, "_yt", lambda: Down())
     with pytest.raises(albums.Unavailable):
         albums.lookup("Band", "Hit", 200)
+
+
+def test_from_release_gives_the_exact_track(fake):
+    fake([], {"MPREb_x": album("LP", "Album", 2001, [
+        {"title": "One", "videoId": "vid00000001", "trackNumber": 1, "artists": [{"name": "Band"}]},
+        {"title": "Two", "videoId": "vid00000002", "trackNumber": 2, "artists": [{"name": "Band"}]}])})
+    info = albums.from_release("MPREb_x", "vid00000002", "Two", "Band")
+    assert (info.album, info.track, info.track_total, info.year, info.artist) == ("LP", 2, 2, "2001", "Band")

@@ -88,7 +88,7 @@ def process(job, dl, settings: config.Settings, catalog: Catalog, emit) -> None:
                 "duration": info.get("duration"), "song_key": twin["song_key"]})  # its plays count for the song
             emit("skipped", vid)
             return
-        album, looked_up = _find_album(settings, tags, info)
+        album, looked_up = _find_album(settings, tags, info, job)
         emit("busy", f"Downloading: {tags.artist} – {tags.title}")
         previous = Path(job["path"]) if job["path"] else None  # set when re-downloading, e.g. to change format
         result = dl.download(info, previous, album)
@@ -119,8 +119,16 @@ def process(job, dl, settings: config.Settings, catalog: Catalog, emit) -> None:
     emit("downloaded", {"video_id": vid, "live": job["priority"] >= PRIORITY_LIVE, **result.meta})
 
 
-def _find_album(settings: config.Settings, tags: youtube.Tags, info: dict) -> tuple[albums.AlbumInfo | None, bool]:
+def _find_album(settings: config.Settings, tags: youtube.Tags, info: dict,
+                job=None) -> tuple[albums.AlbumInfo | None, bool]:
     """(album details or None, whether the lookup actually completed)."""
+    if job is not None and job["album_id"]:  # queued from a known album: tag it with exactly that one
+        try:
+            found = albums.from_release(job["album_id"], job["video_id"], tags.title, tags.artist)
+            if found:
+                return found, True
+        except albums.Unavailable as e:
+            log.info("album details unavailable for %s: %s", info.get("id"), e)
     if not settings.lookup_albums:
         return None, False
     try:
@@ -149,8 +157,10 @@ def fill_albums(events_path: Path | None, video_ids: list[str] | None) -> int:
                 catalog.set_album(r["video_id"], None)
                 continue
             try:
-                info = albums.lookup(youtube.primary_artist(r["artist"] or ""), r["title"] or "", r["duration"],
-                                     album_hint=r["album"] or "")
+                info = albums.from_release(r["album_id"], r["video_id"], r["title"] or "", r["artist"] or "") \
+                    if r["album_id"] else None
+                info = info or albums.lookup(youtube.primary_artist(r["artist"] or ""), r["title"] or "",
+                                             r["duration"], album_hint=r["album"] or "")
             except albums.Unavailable as e:
                 emit("notice", f"YouTube Music isn't reachable right now ({e}). Try again later.")
                 break
@@ -164,7 +174,7 @@ def fill_albums(events_path: Path | None, video_ids: list[str] | None) -> int:
                 except Exception as e:
                     log.warning("could not tag %s: %s", path, e)
                     info = None
-            catalog.set_album(r["video_id"], info.album if info else None)
+            catalog.set_album(r["video_id"], info.album if info else None, info.track if info else None)
             done += 1
             if done % 5 == 0:
                 emit("albums_progress", [done, len(rows), found])
@@ -319,8 +329,10 @@ def queue_tracks(catalog: Catalog, tracks: list[dict], source: str) -> int:
     Songs already saved from another upload are left out here, so they don't each cost a YouTube probe.
     """
     tracks = [t for t in tracks if not catalog.saved_copy(albums.song_key(t["artist"], t["title"]), t["video_id"])]
-    return sum(catalog.add_sighting(t["video_id"], source=source, title=f"{t['artist']} - {t['title']}",
-                                    priority=PRIORITY_COLLECTION, music_hint=True, played=False) for t in tracks)
+    added = sum(catalog.add_sighting(t["video_id"], source=source, title=f"{t['artist']} - {t['title']}",
+                                     priority=PRIORITY_COLLECTION, music_hint=True, played=False) for t in tracks)
+    catalog.set_release(tracks)
+    return added
 
 
 def main(args) -> int:

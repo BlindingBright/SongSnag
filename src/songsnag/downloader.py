@@ -297,6 +297,7 @@ class Downloader:
             "path": str(path),
             "codec": codec.split(".")[0],
             "abr": abr,
+            "track": album.track if album else None,
         })
 
     def account_history(self, limit: int) -> list[tuple[str, str]]:

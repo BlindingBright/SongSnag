@@ -182,3 +182,25 @@ def test_queue_tracks_leaves_out_songs_already_saved(cat, tmp_path):
     tracks = [{"video_id": "topic000001", "title": "One", "artist": "Band"},
               {"video_id": "topic000002", "title": "Two (feat. Guest)", "artist": "Band"}]
     assert worker.queue_tracks(cat, tracks, "album") == 1 and cat.get("topic000002") is None
+
+
+def test_album_downloads_keep_their_release_and_track_number(cat, monkeypatch):
+    from songsnag import albums
+
+    tracks = [{"video_id": "topic000003", "title": "Third", "artist": "Band", "album": "LP",
+               "album_id": "MPREb_lp", "track": 3}]
+    assert worker.queue_tracks(cat, tracks, "album") == 1
+    r = cat.get("topic000003")
+    assert (r["album_id"], r["track"], r["title"], r["artist"], r["album"]) == ("MPREb_lp", 3, "Third", "Band", "LP")
+
+    asked = []
+
+    def from_release(browse_id, vid, title, artist):
+        asked.append((browse_id, vid))
+        return albums.AlbumInfo("LP", "Band", "2020", 3, 10)
+
+    monkeypatch.setattr(albums, "from_release", from_release)
+    monkeypatch.setattr(albums, "lookup", lambda *a, **k: (_ for _ in ()).throw(AssertionError("guessed")))
+    dl = FakeDownloader({"topic000003": "Music"})
+    run_one(cat, "topic000003", dl)
+    assert asked == [("MPREb_lp", "topic000003")] and dl.album.track == 3
