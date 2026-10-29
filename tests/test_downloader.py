@@ -96,3 +96,30 @@ def test_artist_folders_merge_across_spellings(tmp_path):
         assert existing_folder(tmp_path, spelling) == "＂Weird Al＂ Yankovic"
     assert existing_folder(tmp_path, "Someone Else") == "Someone Else"
     assert existing_folder(tmp_path / "missing", "X") == "X"
+
+
+def test_album_songs_take_the_albums_title_credits_and_folder(tmp_path):
+    from songsnag.albums import AlbumInfo
+
+    d = dl(music_dir=str(tmp_path), layout="artist")
+
+    class FakeYDL:
+        def prepare_filename(self, info):
+            return str(tmp_path / info["songsnag_artist"] / f"{info['songsnag_name']}.mp3")
+
+        def process_ie_result(self, info, download=True):
+            self.info = info
+            out = tmp_path / info["songsnag_artist"] / f"{info['songsnag_name']}.mp3"
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(b"x")
+            d._on_final(str(out))
+
+    ydl = FakeYDL()
+    d._open = lambda: ydl
+    video = {"id": "omv00000001", "title": "DAMAG3 FEAT Lil Broccoli - 5318008 OFFICIAL VIDEO", "channel": "DAMAG3"}
+    album = AlbumInfo("TH3 PR3S3NT MOM3NT", "DAMAG3", "2024", 7, 12, artist="DAMAG3", title="5318008 (feat. X)",
+                      credits="Amber Ryann, DAMAG3")
+    res = d.download(video, None, album)
+    assert res.path == tmp_path / "DAMAG3" / "5318008 (feat. X).mp3"  # album artist's folder, album's title
+    assert (res.meta["artist"], res.meta["track"]) == ("Amber Ryann, DAMAG3", 7)
+    assert ydl.info["meta_track"] == "7/12" and ydl.info["meta_album_artist"] == "DAMAG3"

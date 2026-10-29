@@ -238,7 +238,13 @@ class Downloader:
         tags = youtube.song_tags(info)
         if album:
             tags.album = album.album
-            if album.artist and youtube.loose(album.artist) == youtube.loose(tags.folder_artist):
+            if album.title:  # queued from this album: its own title and credits beat the video's
+                tags.title = album.title
+                if album.credits:
+                    tags.artist = album.credits
+                # Filed under the album's artist, so one album never ends up spread over several folders.
+                tags.folder_artist = youtube.primary_artist(album.album_artist or album.credits or tags.artist)
+            if not album.title and album.artist and youtube.loose(album.artist) == youtube.loose(tags.folder_artist):
                 # YouTube Music's spelling of the artist is the canonical one; uploads vary.
                 lead = youtube.primary_artist(tags.artist)
                 tags.artist = album.artist + (tags.artist[len(lead):] if tags.artist.startswith(lead) else "")

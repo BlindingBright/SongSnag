@@ -40,6 +40,8 @@ class AlbumInfo:
     kind: str = ""  # Album / EP / Single
     cover_url: str | None = None
     artist: str = ""  # the song's artist as YouTube Music spells it (e.g. with the quotes in "Weird Al")
+    title: str = ""  # from a known release: the album's own title and credits for this song,
+    credits: str = ""  # cleaner than a music video's ("5318008 OFFICIAL VIDEO" -> "5318008")
 
 
 _FEAT = re.compile(r"\s*[\(\[]?\s*\b(?:feat|ft|featuring|with)\b\.?\s+[^\)\]]*[\)\]]?", re.I)
@@ -62,7 +64,7 @@ def norm(text: str) -> str:
 _DIFFERENT = re.compile(r"\b(live|remix|mix|rmx|acoustic|instrumental|demo|cover|karaoke|reprise|unplugged|"
                         r"sped|slowed|session|orchestral|piano|a cappella|acapella|extended|dub|vip|bootleg)\b", re.I)
 _BRACKETED = re.compile(r"\s*(\([^()]*(?:\([^()]*\)[^()]*)*\)|\[[^\[\]]*\])")
-KEY_VERSION = "2"  # bump when song_key changes, so saved songs get re-keyed
+KEY_VERSION = "3"  # bump when song_key changes, so saved songs get re-keyed
 
 
 def song_key(artist: str, title: str) -> str:
@@ -202,6 +204,11 @@ def from_release(browse_id: str, video_id: str, title: str, artist: str) -> Albu
     if not album:
         return None
     lead = norm(primary_artist(artist))
-    credited = next((a.get("name", "") for t in album.get("tracks") or [] if t.get("videoId") == video_id
-                     for a in t.get("artists") or [] if norm(a.get("name", "")) == lead), "")
-    return _info(album, video_id, title, artist, credited)
+    track = next((t for t in album.get("tracks") or [] if t.get("videoId") == video_id), None)
+    names = [a.get("name", "") for a in (track or {}).get("artists") or [] if a.get("name")]
+    credited = next((n for n in names if norm(n) == lead), "")
+    info = _info(album, video_id, title, artist, credited)
+    if track and track.get("title"):
+        info.title, info.credits = track["title"], ", ".join(names)
+        info.artist = info.artist or (names[0] if names else "")
+    return info
