@@ -14,7 +14,7 @@ SongSnag sits in your system tray and keeps a copy of the music you play on YouT
 - **Album info.** Each song is looked up on YouTube Music for its album, album artist, release year and track number, and gets the official album cover instead of a video frame. Matching is strict: remixes, covers and fan edits are left untagged rather than wrongly tagged. **Fill in missing album info** in the tray menu does the same for songs you already have, retagging the files in place.
 - **Catalogued.** Files go in `Artist/Title.mp3` with embedded tags and square cover art. A searchable library lists every song, how often you played it and where it came from. It exports to an M3U playlist or CSV.
 - **History import.** Pull in songs from your browser history (7 days to all time), your YouTube account's watch history, or a Google Takeout export.
-- **Lightweight.** The tray idles at about 75 MB, uses no CPU and doesn't wake up while nothing is happening. Downloads run in a separate worker process that exits when the queue is empty. The tray icon is grey while idle and only flashes while it's working.
+- **Lightweight.** The tray idles at about 75 MB, uses no CPU and doesn't wake up while nothing is happening. Downloads run in a separate worker process that exits when the queue is empty. The tray icon stays still while idle (grey when paused) and only flashes while it's working.
 - **Private.** Everything happens on your computer. SongSnag talks only to YouTube and YouTube Music, plus PyPI once a day to keep yt-dlp current (you can turn that and the album lookup off).
 
 ## Install

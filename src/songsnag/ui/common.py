@@ -41,12 +41,12 @@ def _grey(pm: QPixmap) -> QPixmap:
 
 @cache
 def tray_icon(state: str) -> QIcon:
-    """idle / paused: solid grey (nothing happening). busy / busy2: full colour, the two frames of the
-    "working" flash (busy2 adds a green dot)."""
+    """idle: the logo as is. paused: grey with pause bars. busy / busy2: the two frames of the "working"
+    flash (busy2 adds a green dot)."""
     base = app_icon().pixmap(64, 64)
-    if state == "busy":
+    if state in ("idle", "busy"):
         return QIcon(base)
-    pm = _grey(base) if state in ("idle", "paused") else QPixmap(base)
+    pm = _grey(base) if state == "paused" else QPixmap(base)
     p = QPainter(pm)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.setPen(Qt.PenStyle.NoPen)

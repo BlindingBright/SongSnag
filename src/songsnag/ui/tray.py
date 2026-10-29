@@ -197,7 +197,7 @@ class Tray(QObject):
         return f"Listening to {where}" if where else "No browser found"
 
     def _set_icon(self) -> None:
-        """Grey and still while idle or paused; colour and a gentle flash only while something is happening.
+        """The plain logo while idle, grey while paused, and a gentle flash only while something is happening.
 
         The icon is only touched when the state changes: tray hosts redraw (and some visibly blink) on every
         setIcon, and an idle tray shouldn't wake up at all.
