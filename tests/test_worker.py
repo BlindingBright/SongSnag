@@ -119,3 +119,18 @@ def test_album_lookup_outage_does_not_block_download(cat, monkeypatch):
     cat.add_sighting("music000001", source="brave", priority=PRIORITY_LIVE)
     assert run_one(cat, "music000001", dl)[-1] == "downloaded"
     assert cat.get("music000001")["album_checked"] is None  # will be retried by "Fill in album info"
+
+
+def test_same_song_from_another_upload_is_skipped(cat, tmp_path):
+    saved = tmp_path / "Song.mp3"
+    saved.write_bytes(b"x")
+    cat.add_sighting("first000001", source="brave", priority=PRIORITY_LIVE)
+    cat.next_job()
+    cat.finish_done("first000001", {"artist": "Artist", "title": "Song", "path": str(saved)})
+
+    cat.add_sighting("second00001", source="brave", priority=PRIORITY_LIVE)
+    assert run_one(cat, "second00001", FakeDownloader({"second00001": "Music"}))[-1] == "skipped"
+    assert cat.get("second00001")["note"].startswith("already saved from another upload")
+
+    cat.requeue(["second00001"], force=True)  # "Download anyway" (and format conversions) still download
+    assert run_one(cat, "second00001", FakeDownloader({"second00001": "Music"}))[-1] == "downloaded"

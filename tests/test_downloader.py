@@ -85,3 +85,14 @@ def test_no_js_runtime_still_builds_a_downloader(tmp_path):
     d.js_runtimes = {}
     assert "js_runtimes" not in d.base_opts(cookies=False)
     yt_dlp.YoutubeDL(d._download_opts(cookies=False)).close()  # must not raise
+
+
+def test_artist_folders_merge_across_spellings(tmp_path):
+    from songsnag.downloader import existing_folder, folder_name
+
+    assert folder_name('"Weird Al" Yankovic') == "'Weird Al' Yankovic"  # not yt-dlp's full-width ＂
+    (tmp_path / "＂Weird Al＂ Yankovic").mkdir()
+    for spelling in ("'Weird' Al Yankovic", "Weird Al Yankovic", "'Weird Al' Yankovic"):
+        assert existing_folder(tmp_path, spelling) == "＂Weird Al＂ Yankovic"
+    assert existing_folder(tmp_path, "Someone Else") == "Someone Else"
+    assert existing_folder(tmp_path / "missing", "X") == "X"

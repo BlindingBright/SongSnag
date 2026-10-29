@@ -78,6 +78,16 @@ def process(job, dl, settings: config.Settings, catalog: Catalog, emit) -> None:
             emit("skipped", vid)
             return
         tags = youtube.song_tags(info)
+        twin = None if job["force"] else catalog.saved_copy(albums.song_key(tags.artist, tags.title), vid)
+        if twin:
+            # The same song from another upload (official video vs. Topic track vs. lyric video).
+            reason = f"already saved from another upload ({Path(twin['path']).name})"
+            log.info("skip %s: %s", vid, reason)
+            catalog.finish_skipped(vid, reason, {
+                "title": tags.title, "artist": tags.artist, "channel": info.get("channel"),
+                "duration": info.get("duration")})
+            emit("skipped", vid)
+            return
         album, looked_up = _find_album(settings, tags, info)
         emit("busy", f"Downloading: {tags.artist} – {tags.title}")
         previous = Path(job["path"]) if job["path"] else None  # set when re-downloading, e.g. to change format
@@ -165,6 +175,14 @@ def fill_albums(events_path: Path | None, video_ids: list[str] | None) -> int:
         catalog.close()
 
 
+def _stamp(path: Path) -> tuple | None:
+    try:
+        st = path.stat()
+        return st.st_mtime_ns, st.st_size
+    except OSError:
+        return None
+
+
 def run(events_path: Path | None, linger: float = LINGER) -> int:
     from .downloader import Downloader
 
@@ -173,9 +191,12 @@ def run(events_path: Path | None, linger: float = LINGER) -> int:
     dl = None
     dl_key = None
     idle_since = time.time()
+    settings, stamp = None, None
     try:
         while True:
-            settings = config.load()
+            now_stamp = _stamp(config.settings_file())
+            if settings is None or now_stamp != stamp:  # the tray saves settings; reread only when it has
+                settings, stamp = config.load(), now_stamp
             if settings.paused or float(catalog.get_state(COOLDOWN_KEY, "0") or 0) > time.time():
                 break
             job = catalog.next_job()
@@ -195,8 +216,8 @@ def run(events_path: Path | None, linger: float = LINGER) -> int:
                 log.exception("unexpected error on %s", job["video_id"])
                 catalog.finish_failed(job["video_id"], f"internal error: {e}", retry_in=None)
             idle_since = time.time()
-            if job["priority"] <= PRIORITY_BACKFILL:
-                time.sleep(random.uniform(2, 6))  # be gentle with YouTube during big imports
+            if job["priority"] < PRIORITY_LIVE:
+                time.sleep(random.uniform(2, 6))  # be gentle with YouTube during imports and whole albums
     finally:
         if dl:
             dl.close()

@@ -15,6 +15,8 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 
+from .youtube import primary_artist
+
 log = logging.getLogger(__name__)
 
 TYPE_RANK = {"album": 0, "ep": 1, "single": 2}
@@ -37,6 +39,7 @@ class AlbumInfo:
     track_total: int | None = None
     kind: str = ""  # Album / EP / Single
     cover_url: str | None = None
+    artist: str = ""  # the song's artist as YouTube Music spells it (e.g. with the quotes in "Weird Al")
 
 
 _FEAT = re.compile(r"\s*[\(\[]?\s*\b(?:feat|ft|featuring|with)\b\.?\s+[^\)\]]*[\)\]]?", re.I)
@@ -52,6 +55,11 @@ def norm(text: str) -> str:
     t = unicodedata.normalize("NFKD", t.casefold().replace("&", "and"))
     t = "".join(c for c in t if not unicodedata.combining(c))
     return re.sub(r"[\W_]+", "", t)
+
+
+def song_key(artist: str, title: str) -> str:
+    """Identifies a song across uploads: the official video, the Topic track and a lyric video share it."""
+    return f"{norm(primary_artist(artist or ''))}|{norm(title or '')}"
 
 
 def duration_ok(ours: float | None, theirs: float | None, strict: bool = False) -> bool:
@@ -152,6 +160,8 @@ def lookup(artist: str, title: str, duration: float | None = None, *, album_hint
         return None
 
     _, song, album = best
+    credited = next((a.get("name", "") for a in song.get("artists") or [] if norm(a.get("name", "")) == want_artist),
+                    "")
     tracks = album.get("tracks") or []
     number = next((t.get("trackNumber") for t in tracks if t.get("videoId") == song.get("videoId")), None)
     if number is None:
@@ -164,4 +174,5 @@ def lookup(artist: str, title: str, duration: float | None = None, *, album_hint
         track_total=album.get("trackCount") or len(tracks) or None,
         kind=album.get("type") or "",
         cover_url=_cover(album),
+        artist=credited,
     )

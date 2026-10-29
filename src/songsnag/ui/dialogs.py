@@ -132,7 +132,7 @@ class SettingsDialog(QDialog):
             item.setCheckState(Qt.CheckState.Checked if not chosen or p.key in chosen else Qt.CheckState.Unchecked)
             self.profiles.addItem(item)
         if not self.profiles.count():
-            self.profiles.addItem("No Brave, Chrome or Edge profile was found on this computer")
+            self.profiles.addItem(f"No {browsers.SUPPORTED} profile was found on this computer")
             self.profiles.setEnabled(False)
 
         watching = QGroupBox("What to download")
@@ -193,13 +193,13 @@ class WelcomeDialog(QDialog):
         self.setWindowTitle(f"Welcome to {APP_NAME}")
         self.setWindowIcon(app_icon())
         found = browsers.find_profiles()
-        where = browsers.browsers_label(found) if found else "Brave, Chrome or Edge"
+        where = browsers.browsers_label(found) if found else browsers.SUPPORTED
 
         intro = QLabel(
             f"<h3>{APP_NAME} saves the music you play on YouTube in {where}.</h3>"
             "<p>It runs quietly in your system tray. Whenever you play a song on YouTube or YouTube Music, "
             "it downloads the best-quality audio, tags it and files it in your music folder.</p>"
-            + ("" if found else "<p><b>No Brave, Chrome or Edge browser was found on this computer.</b> You can "
+            + ("" if found else "<p><b>No supported browser was found on this computer.</b> You can "
                                 "still import a Google Takeout watch history from the tray menu.</p>"))
         intro.setWordWrap(True)
         intro.setTextFormat(Qt.TextFormat.RichText)

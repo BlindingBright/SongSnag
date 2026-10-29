@@ -12,10 +12,13 @@ import threading
 import time
 from pathlib import Path
 
+from .albums import song_key
+
 QUEUED, WORKING, DONE, SKIPPED, FAILED = "queued", "working", "done", "skipped", "failed"
 STATUSES = (QUEUED, WORKING, DONE, SKIPPED, FAILED)
 
 PRIORITY_LIVE = 10  # played just now
+PRIORITY_COLLECTION = 5  # an album, artist or playlist the user asked for
 PRIORITY_BACKFILL = 0  # imported from history
 
 _SCHEMA = """
@@ -45,6 +48,25 @@ CREATE TABLE IF NOT EXISTS tracks (
 );
 CREATE INDEX IF NOT EXISTS tracks_queue ON tracks(status, priority DESC, first_seen);
 CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT);
+CREATE TABLE IF NOT EXISTS follows (
+    artist_id    TEXT PRIMARY KEY,  -- YouTube Music channel id
+    name         TEXT NOT NULL,
+    added        REAL,
+    last_checked REAL,
+    seen         TEXT NOT NULL DEFAULT '[]'  -- JSON list of release ids already known
+);
+CREATE TABLE IF NOT EXISTS suggestions (
+    video_id     TEXT PRIMARY KEY,
+    song_key     TEXT,
+    title        TEXT,
+    artist       TEXT,
+    album        TEXT,
+    duration     REAL,
+    reason       TEXT,
+    score        REAL,
+    created      REAL,
+    state        TEXT NOT NULL DEFAULT 'new'  -- new / queued / dismissed
+);
 """
 
 
@@ -61,6 +83,12 @@ class Catalog:
             columns = {r[1] for r in self._db.execute("PRAGMA table_info(tracks)")}
             if "album_checked" not in columns:  # added in 1.1: when the album lookup last ran
                 self._db.execute("ALTER TABLE tracks ADD COLUMN album_checked REAL")
+            if "song_key" not in columns:  # added in 1.1: artist+title, to spot the same song from another upload
+                self._db.execute("ALTER TABLE tracks ADD COLUMN song_key TEXT")
+                self._db.executemany("UPDATE tracks SET song_key=? WHERE video_id=?", [
+                    (song_key(r[1], r[2]), r[0]) for r in self._db.execute(
+                        "SELECT video_id, artist, title FROM tracks WHERE status=? AND title IS NOT NULL", (DONE,))])
+            self._db.execute("CREATE INDEX IF NOT EXISTS tracks_song ON tracks(song_key)")
             if recover:
                 # Only the download worker passes this: whatever it was doing when it last stopped goes back in line.
                 self._db.execute("UPDATE tracks SET status=? WHERE status=?", (QUEUED, WORKING))
@@ -77,6 +105,11 @@ class Catalog:
         with self._lock:
             return self._db.execute(sql, args).fetchall()
 
+    def version(self) -> tuple[int, int]:
+        """Changes whenever anyone (this connection or the worker's) writes; cheap enough to poll."""
+        with self._lock:
+            return self._db.execute("PRAGMA data_version").fetchone()[0], self._db.total_changes
+
     # ---- state -----------------------------------------------------------
     def get_state(self, key: str, default: str | None = None) -> str | None:
         rows = self._all("SELECT value FROM state WHERE key=?", (key,))
@@ -88,8 +121,12 @@ class Catalog:
 
     # ---- queue -----------------------------------------------------------
     def add_sighting(self, video_id: str, *, source: str, title: str = "", played_at: float | None = None,
-                     priority: int = PRIORITY_BACKFILL, music_hint: bool = False) -> bool:
-        """Record that a video was played/seen. Returns True if it was newly queued."""
+                     priority: int = PRIORITY_BACKFILL, music_hint: bool = False, played: bool = True) -> bool:
+        """Record that a video was played/seen. Returns True if it was newly queued.
+
+        played=False queues a video the user asked for without having listened to it (albums, suggestions),
+        so it doesn't count as a play.
+        """
         now = time.time()
         played_at = played_at or now
         with self._lock, self._db:
@@ -97,9 +134,15 @@ class Catalog:
             if row is None:
                 self._db.execute(
                     "INSERT INTO tracks(video_id, status, priority, source, music_hint, seen_title, first_seen,"
-                    " last_played, plays) VALUES(?,?,?,?,?,?,?,?,1)",
-                    (video_id, QUEUED, priority, source, int(music_hint), title, now, played_at))
+                    " last_played, plays) VALUES(?,?,?,?,?,?,?,?,?)",
+                    (video_id, QUEUED, priority, source, int(music_hint), title, now,
+                     played_at if played else None, int(played)))
                 return True
+            if not played:
+                self._db.execute("UPDATE tracks SET music_hint = MAX(music_hint, ?), priority = CASE WHEN status = ?"
+                                 " THEN MAX(priority, ?) ELSE priority END WHERE video_id = ?",
+                                 (int(music_hint), QUEUED, priority, video_id))
+                return False
             newer = played_at > (row["last_played"] or 0) + 1
             self._db.execute(
                 "UPDATE tracks SET plays = plays + ?, last_played = MAX(COALESCE(last_played, 0), ?),"
@@ -135,8 +178,16 @@ class Catalog:
 
     def finish_done(self, video_id: str, meta: dict) -> None:
         extra, args = self._meta_sql(meta)
-        self._run(f"UPDATE tracks SET status=?, downloaded_at=?, note=NULL, force=0{extra} WHERE video_id=?",
-                  (DONE, time.time(), *args, video_id))
+        key = song_key(meta.get("artist") or "", meta.get("title") or "") if meta.get("title") else None
+        self._run(f"UPDATE tracks SET status=?, downloaded_at=?, note=NULL, force=0, song_key=?{extra}"
+                  " WHERE video_id=?", (DONE, time.time(), key, *args, video_id))
+
+    def saved_copy(self, key: str, exclude: str) -> sqlite3.Row | None:
+        """Another video already saved as this same song (artist + title), whose file still exists."""
+        for r in self._all("SELECT * FROM tracks WHERE song_key=? AND status=? AND video_id<>?", (key, DONE, exclude)):
+            if r["path"] and Path(r["path"]).exists():
+                return r
+        return None
 
     def finish_skipped(self, video_id: str, reason: str, meta: dict | None = None) -> None:
         extra, args = self._meta_sql(meta or {})
@@ -250,3 +301,66 @@ class Catalog:
                 f.write(f"#EXTINF:{int(r['duration'] or -1)},{r['artist']} - {r['title']}\n{ref.as_posix()}\n")
                 n += 1
         return n
+
+    # ---- listening profile (for suggestions) -----------------------------
+    def listening(self) -> list[sqlite3.Row]:
+        """Saved songs the user actually played, most played first."""
+        return self._all("SELECT video_id, artist, title, plays, last_played FROM tracks"
+                         " WHERE status=? AND plays>0 ORDER BY plays DESC, last_played DESC", (DONE,))
+
+    def known(self) -> tuple[set[str], set[str]]:
+        """(every video id in the catalog, every saved song key): what not to suggest again."""
+        with self._lock:
+            ids = {r[0] for r in self._db.execute("SELECT video_id FROM tracks")}
+            ids |= {r[0] for r in self._db.execute("SELECT video_id FROM suggestions WHERE state<>'new'")}
+            keys = {r[0] for r in self._db.execute("SELECT song_key FROM tracks WHERE song_key IS NOT NULL")}
+            keys |= {r[0] for r in self._db.execute(
+                "SELECT song_key FROM suggestions WHERE state='dismissed' AND song_key IS NOT NULL")}
+        return ids, keys
+
+    def replace_suggestions(self, items: list[dict]) -> None:
+        """New suggestions replace the unanswered old ones; queued/dismissed ones are remembered."""
+        now = time.time()
+        with self._lock, self._db:
+            self._db.execute("DELETE FROM suggestions WHERE state='new'")
+            self._db.executemany(
+                "INSERT OR IGNORE INTO suggestions(video_id, song_key, title, artist, album, duration, reason, score,"
+                " created) VALUES(?,?,?,?,?,?,?,?,?)",
+                [(i["video_id"], song_key(i["artist"], i["title"]), i["title"], i["artist"], i.get("album") or "",
+                  i.get("duration"), i.get("reason") or "", i.get("score") or 0, now) for i in items])
+
+    def suggestions(self, state: str = "new") -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM suggestions WHERE state=? ORDER BY score DESC", (state,))
+
+    def answer_suggestions(self, video_ids: list[str], state: str) -> None:
+        """state: 'queued' (also adds them to the download queue) or 'dismissed'."""
+        with self._lock, self._db:
+            self._db.executemany("UPDATE suggestions SET state=? WHERE video_id=?", [(state, v) for v in video_ids])
+            if state == "queued":
+                rows = self._db.execute(f"SELECT video_id, artist, title FROM suggestions WHERE video_id IN"
+                                        f" ({','.join('?' * len(video_ids))})", video_ids).fetchall()
+        if state == "queued":
+            for r in rows:
+                self.add_sighting(r[0], source="suggested", title=f"{r[1]} - {r[2]}", priority=PRIORITY_COLLECTION,
+                                  music_hint=True, played=False)
+
+    # ---- followed artists ------------------------------------------------
+    def follows(self) -> list[sqlite3.Row]:
+        return self._all("SELECT * FROM follows ORDER BY name COLLATE NOCASE")
+
+    def follow(self, artist_id: str, name: str, seen: list[str]) -> None:
+        import json
+
+        self._run("INSERT INTO follows(artist_id, name, added, last_checked, seen) VALUES(?,?,?,?,?)"
+                  " ON CONFLICT(artist_id) DO UPDATE SET name=excluded.name",
+                  (artist_id, name, time.time(), time.time(), json.dumps(sorted(seen))))
+
+    def unfollow(self, artist_ids: list[str]) -> None:
+        with self._lock, self._db:
+            self._db.executemany("DELETE FROM follows WHERE artist_id=?", [(a,) for a in artist_ids])
+
+    def followed_checked(self, artist_id: str, seen: list[str]) -> None:
+        import json
+
+        self._run("UPDATE follows SET last_checked=?, seen=? WHERE artist_id=?",
+                  (time.time(), json.dumps(sorted(seen)), artist_id))

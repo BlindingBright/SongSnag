@@ -29,7 +29,7 @@ def setup_logging(debug: bool, name: str = APP_ID) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog=APP_ID,
-                                 description="Save the music you play on YouTube in Brave, Chrome or Edge.")
+                                 description="Save the music you play on YouTube in your web browser.")
     ap.add_argument("--version", action="version", version=f"{APP_NAME} {__version__}")
     ap.add_argument("--debug", action="store_true", help="verbose logging to the terminal")
     ap.add_argument("--library", action="store_true", help="open the library window on start")

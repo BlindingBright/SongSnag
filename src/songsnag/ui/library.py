@@ -25,16 +25,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .. import APP_NAME, youtube
+from .. import APP_NAME, browsers, youtube
 from ..catalog import DONE, FAILED, QUEUED, SKIPPED, WORKING, Catalog
 from ..config import AUDIO_FORMATS, AUDIO_FORMATS_SHORT, Settings
 from .common import app_icon, open_path, reveal
 
 STATUS_LABELS = {DONE: "Saved", QUEUED: "Waiting", WORKING: "Working…", SKIPPED: "Skipped", FAILED: "Failed"}
 COLUMNS = ("Artist", "Title", "Album", "Status", "Quality", "Plays", "Source", "Date", "Note")
-SOURCES = {"brave": "Played in Brave", "chrome": "Played in Chrome", "edge": "Played in Edge",
-           "brave-history": "Brave history", "chrome-history": "Chrome history", "edge-history": "Edge history",
-           "youtube-history": "YouTube history", "takeout": "Takeout"}
+SOURCES = {
+    **{b: f"Played in {app}" for b, app in browsers.APPS.items()},
+    **{f"{b}-history": f"{app} history" for b, app in browsers.APPS.items()},
+    "youtube-history": "YouTube history", "takeout": "Takeout", "album": "Album", "artist": "Artist",
+    "playlist": "Playlist", "suggested": "Suggested", "followed": "New release",
+}
 
 
 class LibraryWindow(QWidget):

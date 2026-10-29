@@ -104,7 +104,7 @@ class Tray(QObject):
             problems.append("No JavaScript runtime (Deno or Node.js) was found. YouTube needs one; "
                             "many downloads will fail until one is installed.")
         if not browsers.find_profiles():
-            problems.append("No Brave, Chrome or Edge browser was found, so plays can't be detected automatically.")
+            problems.append(f"No {browsers.SUPPORTED} browser was found, so plays can't be detected automatically.")
         for p in problems:
             log.warning(p)
         if problems:

@@ -100,3 +100,83 @@ def test_album_checked_migration_and_queue(tmp_path):
     assert len(c.needs_album(["aaaaaaaaaaa"])) == 1  # ...unless the user asks for that song
     c.set_album("aaaaaaaaaaa", "LP")
     assert c.get("aaaaaaaaaaa")["album"] == "LP"
+
+
+def test_song_key_finds_the_same_song_from_another_upload(tmp_path):
+    from songsnag.albums import song_key
+
+    assert song_key('"Weird Al" Yankovic', "Fat") == song_key("'Weird' Al Yankovic", "Fat (Remastered)")
+    assert song_key("A feat. B", "Song") == song_key("A", "Song")
+    assert song_key("A", "Song") != song_key("A", "Song (Live)")
+
+    c = cat(tmp_path)
+    song = tmp_path / "Fat.mp3"
+    song.write_bytes(b"x")
+    c.add_sighting("video000001", source="brave")
+    c.next_job()
+    c.finish_done("video000001", {"artist": '"Weird Al" Yankovic', "title": "Fat", "path": str(song)})
+    key = song_key("Weird Al Yankovic", "Fat")
+    assert c.saved_copy(key, exclude="topic000001")["video_id"] == "video000001"
+    assert c.saved_copy(key, exclude="video000001") is None  # a re-download of the song itself
+    song.unlink()
+    assert c.saved_copy(key, exclude="topic000001") is None  # the file is gone: download it again
+
+
+def test_song_key_backfilled_for_old_catalogs(tmp_path):
+    c = cat(tmp_path)
+    c.add_sighting("aaaaaaaaaaa", source="brave")
+    c.next_job()
+    c.finish_done("aaaaaaaaaaa", {"artist": "A", "title": "T"})
+    c._run("DROP INDEX tracks_song")
+    c._run("ALTER TABLE tracks DROP COLUMN song_key")  # as a 1.0 catalog was
+    c.close()
+    c = cat(tmp_path)
+    assert c.get("aaaaaaaaaaa")["song_key"] == "a|t"
+
+
+def test_unplayed_requests_do_not_count_as_plays(tmp_path):
+    c = cat(tmp_path)
+    assert c.add_sighting("album000001", source="album", played=False)
+    assert not c.add_sighting("album000001", source="album", played=False)
+    r = c.get("album000001")
+    assert r["plays"] == 0 and r["last_played"] is None
+    c.add_sighting("album000001", source="brave")  # then actually played
+    assert c.get("album000001")["plays"] == 1
+
+
+def test_version_changes_on_any_write(tmp_path):
+    c = cat(tmp_path)
+    other = cat(tmp_path)
+    v = c.version()
+    assert c.version() == v
+    c.add_sighting("aaaaaaaaaaa", source="brave")
+    assert c.version() != v
+    v = c.version()
+    other.add_sighting("bbbbbbbbbbb", source="brave")  # the worker's connection
+    assert c.version() != v
+
+
+def test_suggestions_lifecycle(tmp_path):
+    c = cat(tmp_path)
+    c.replace_suggestions([{"video_id": "sugg0000001", "artist": "A", "title": "One", "score": 2},
+                           {"video_id": "sugg0000002", "artist": "B", "title": "Two", "score": 1}])
+    assert [r["video_id"] for r in c.suggestions()] == ["sugg0000001", "sugg0000002"]
+    c.answer_suggestions(["sugg0000001"], "queued")
+    c.answer_suggestions(["sugg0000002"], "dismissed")
+    assert c.get("sugg0000001")["status"] == QUEUED and c.get("sugg0000001")["plays"] == 0
+    ids, keys = c.known()
+    assert {"sugg0000001", "sugg0000002"} <= ids and "b|two" in keys
+    c.replace_suggestions([])  # answered ones survive a refresh
+    assert c.suggestions() == [] and len(c.suggestions("dismissed")) == 1
+
+
+def test_follows(tmp_path):
+    import json
+
+    c = cat(tmp_path)
+    c.follow("UCartist", "Band", ["MPREb_1"])
+    c.followed_checked("UCartist", ["MPREb_1", "MPREb_2"])
+    (f,) = c.follows()
+    assert f["name"] == "Band" and json.loads(f["seen"]) == ["MPREb_1", "MPREb_2"]
+    c.unfollow(["UCartist"])
+    assert c.follows() == []

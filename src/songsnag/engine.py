@@ -22,7 +22,7 @@ log = logging.getLogger(__name__)
 
 
 class Engine:
-    """Watches Brave, Chrome and Edge for new YouTube plays and runs history imports.
+    """Watches the browsers for new YouTube plays and runs history imports.
 
     Downloading happens in a separate worker process (see worker.py); this class
     only fills the queue, so it never needs yt-dlp.

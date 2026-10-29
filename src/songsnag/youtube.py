@@ -102,6 +102,9 @@ def _norm(text: str) -> str:
     return re.sub(r"[\W_]", "", "".join(c for c in decomposed if not unicodedata.combining(c)))
 
 
+loose = _norm
+
+
 def _same(a: str, b: str) -> bool:
     return bool(a and b) and _norm(a) == _norm(b)
 

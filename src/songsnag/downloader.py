@@ -28,6 +28,23 @@ RATE_LIMITED = ("confirm you're not a bot", "confirm you’re not a bot", "http 
                 "rate limit")
 
 
+def folder_name(name: str) -> str:
+    """yt-dlp's windowsfilenames turns '"' into a full-width '＂'; an apostrophe reads better everywhere."""
+    return name.replace('"', "'").strip() or "Unknown Artist"
+
+
+def existing_folder(music: Path, artist: str) -> str:
+    """The artist folder already on disk under another spelling ("Weird Al" / 'Weird' Al / Weird Al), else artist."""
+    want = youtube.loose(artist)
+    try:
+        for d in music.iterdir():
+            if youtube.loose(d.name) == want and d.is_dir():
+                return d.name
+    except OSError:
+        pass
+    return artist
+
+
 class RateLimited(Exception):
     pass
 
@@ -221,7 +238,15 @@ class Downloader:
         tags = youtube.song_tags(info)
         if album:
             tags.album = album.album
-        info["songsnag_artist"] = tags.folder_artist
+            if album.artist and youtube.loose(album.artist) == youtube.loose(tags.folder_artist):
+                # YouTube Music's spelling of the artist is the canonical one; uploads vary.
+                lead = youtube.primary_artist(tags.artist)
+                tags.artist = album.artist + (tags.artist[len(lead):] if tags.artist.startswith(lead) else "")
+                tags.folder_artist = album.artist
+        folder = folder_name(tags.folder_artist)
+        if self.settings.layout == "artist":
+            folder = existing_folder(self.settings.music_path, folder)
+        info["songsnag_artist"] = folder
         info["songsnag_name"] = tags.title
         info["meta_artist"] = tags.artist
         info["meta_title"] = tags.title
@@ -277,7 +302,7 @@ class Downloader:
     def account_history(self, limit: int) -> list[tuple[str, str]]:
         """(video_id, title) pairs from the signed-in YouTube watch history."""
         if not self.cookie_source:
-            raise RuntimeError("No Brave, Chrome or Edge profile to read your YouTube login from.")
+            raise RuntimeError("No browser profile to read your YouTube login from.")
         opts = self.base_opts(cookies=True) | {"extract_flat": "in_playlist", "playlistend": limit}
         with yt_dlp.YoutubeDL(opts) as ydl:
             res = self._call(ydl.extract_info, "https://www.youtube.com/feed/history", download=False)
